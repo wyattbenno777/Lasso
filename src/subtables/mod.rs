@@ -19,6 +19,8 @@ use crate::{
 #[cfg(feature = "multicore")]
 use rayon::prelude::*;
 
+pub mod jolt;
+pub mod jolt2;
 pub mod and;
 pub mod lt;
 pub mod or;
