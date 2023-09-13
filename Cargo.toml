@@ -10,6 +10,7 @@ authors = [
     # authors who contributed to Lasso
     "Michael Zhu <mzhu@a16z.com>",
     "Sam Ragsdale <sragsdale@a16z.com>",
+    "Wyatt Benno <wyatt@icme.io>",
 ]
 edition = "2021"
 description = "LASSO SNARK lookup argument, built on Arkworks"
