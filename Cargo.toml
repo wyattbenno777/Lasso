@@ -40,6 +40,7 @@ ark-std = { version = "0.4.0", default-features = false }
 ark-serialize = { version = "0.4.2", default-features = false, features = [
     "derive",
 ] }
+ark-crypto-primitives = {version = "0.4.0", features = ["sponge"] }
 
 ark-bn254 = { version = "^0.4.0", default-features = false, features = [ "curve" ] }
 ark-grumpkin = { version = "^0.4.0", default-features = false }
@@ -54,6 +55,9 @@ tracing-subscriber = "0.3.17"
 tracing-texray = "0.2.0"
 clap = { version = "4.3.10", features = ["derive"] }
 hashbrown = "0.14.0"
+
+poseidon-paramgen = { git = "https://github.com/nikkolasg/poseidon377", branch = "feat/v0.4" }
+poseidon-parameters = { git = "https://github.com/nikkolasg/poseidon377", branch = "feat/v0.4" }
 
 [dev-dependencies]
 criterion = "0.3.1"

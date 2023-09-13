@@ -11,6 +11,7 @@ mod poly;
 mod subprotocols;
 pub mod subtables;
 mod utils;
+mod r1cs;
 
 #[cfg(test)]
 mod e2e_test;
