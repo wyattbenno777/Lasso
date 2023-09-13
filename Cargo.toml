@@ -34,11 +34,14 @@ thiserror = "1.0"
 rand_chacha = { version = "0.3.0", default-features = false }
 
 ark-ec = { version = "0.4.2", default-features = false }
-ark-ff = { version = "0.4.2", default-features = false }
+ark-ff = { version= "0.4.2", default-features = false }
 ark-std = { version = "0.4.0", default-features = false }
 ark-serialize = { version = "0.4.2", default-features = false, features = [
     "derive",
 ] }
+
+ark-bn254 = { version = "^0.4.0", default-features = false, features = [ "curve" ] }
+ark-grumpkin = { version = "^0.4.0", default-features = false }
 
 # ark-bls12-381 = { version = "^0.4.0", default-features = false, features = [ "curve" ] }
 criterion = { version = "0.3.1", features = ["html_reports"] }
@@ -73,3 +76,11 @@ ark-msm = [] # run with arkworks MSM without small field element optimization
 debug = true
 codegen-units = 1
 lto = "fat"
+
+[patch.crates-io]
+ark-ff = { git = "https://github.com/arkworks-rs/algebra/" }
+ark-ec = { git = "https://github.com/arkworks-rs/algebra/" }
+ark-poly = { git = "https://github.com/arkworks-rs/algebra/" }
+ark-serialize = { git = "https://github.com/arkworks-rs/algebra/" }
+ark-grumpkin = { path = "./curves/grumpkin" }
+ark-bn254 = { path = "./curves/bn254" }
