@@ -2,25 +2,22 @@
 use crate::poly::dense_mlpoly::DensePolynomial;
 use crate::poly::eq_poly::EqPolynomial;
 use crate::subprotocols::sumcheck::SumcheckInstanceProof;
-use crate::r1cs::poseidon_transcript::PoseidonTranscript;
-use crate::r1cs::transcript::Transcript;
-
-use ark_crypto_primitives::sponge::Absorb;
-use ark_ff::PrimeField;
+use ark_ec::CurveGroup;
 use ark_serialize::*;
 use crate::utils::math::Math;
+use merlin::Transcript;
 
 #[derive(Debug)]
-pub struct ProductCircuit<F: PrimeField> {
-  left_vec: Vec<DensePolynomial<F>>,
-  right_vec: Vec<DensePolynomial<F>>,
+pub struct ProductCircuit<G: CurveGroup> {
+  left_vec: Vec<DensePolynomial<G::ScalarField>>,
+  right_vec: Vec<DensePolynomial<G::ScalarField>>,
 }
 
-impl<F: PrimeField> ProductCircuit<F> {
+impl<G: CurveGroup> ProductCircuit<G> {
   fn compute_layer(
-    inp_left: &DensePolynomial<F>,
-    inp_right: &DensePolynomial<F>,
-  ) -> (DensePolynomial<F>, DensePolynomial<F>) {
+    inp_left: &DensePolynomial<G::ScalarField>,
+    inp_right: &DensePolynomial<G::ScalarField>,
+  ) -> (DensePolynomial<G::ScalarField>, DensePolynomial<G::ScalarField>) {
     let len = inp_left.len() + inp_right.len();
     let outp_left = (0..len / 4)
       .map(|i| inp_left[i] * inp_right[i])
@@ -34,9 +31,9 @@ impl<F: PrimeField> ProductCircuit<F> {
     )
   }
 
-  pub fn new(poly: &DensePolynomial<F>) -> Self {
-    let mut left_vec: Vec<DensePolynomial<F>> = Vec::new();
-    let mut right_vec: Vec<DensePolynomial<F>> = Vec::new();
+  pub fn new(poly: &DensePolynomial<G::ScalarField>) -> Self {
+    let mut left_vec: Vec<DensePolynomial<G::ScalarField>> = Vec::new();
+    let mut right_vec: Vec<DensePolynomial<G::ScalarField>> = Vec::new();
 
     let num_layers = poly.len().log_2();
     let (outp_left, outp_right) = poly.split(poly.len() / 2);
@@ -45,7 +42,7 @@ impl<F: PrimeField> ProductCircuit<F> {
     right_vec.push(outp_right);
 
     for i in 0..num_layers - 1 {
-      let (outp_left, outp_right) = ProductCircuit::compute_layer(&left_vec[i], &right_vec[i]);
+      let (outp_left, outp_right) = ProductCircuit::<G>::compute_layer(&left_vec[i], &right_vec[i]);
       left_vec.push(outp_left);
       right_vec.push(outp_right);
     }
@@ -56,7 +53,7 @@ impl<F: PrimeField> ProductCircuit<F> {
     }
   }
 
-  pub fn evaluate(&self) -> F {
+  pub fn evaluate(&self) -> G::ScalarField  {
     let len = self.left_vec.len();
     assert_eq!(self.left_vec[len - 1].get_num_vars(), 0);
     assert_eq!(self.right_vec[len - 1].get_num_vars(), 0);
@@ -64,17 +61,17 @@ impl<F: PrimeField> ProductCircuit<F> {
   }
 }
 
-pub struct DotProductCircuit<F: PrimeField> {
-  left: DensePolynomial<F>,
-  right: DensePolynomial<F>,
-  weight: DensePolynomial<F>,
+pub struct DotProductCircuit<G: CurveGroup> {
+  left: DensePolynomial<G::ScalarField>,
+  right: DensePolynomial<G::ScalarField>,
+  weight: DensePolynomial<G::ScalarField>,
 }
 
-impl<F: PrimeField> DotProductCircuit<F> {
+impl<G: CurveGroup> DotProductCircuit<G> {
   pub fn new(
-    left: DensePolynomial<F>,
-    right: DensePolynomial<F>,
-    weight: DensePolynomial<F>,
+    left: DensePolynomial<G::ScalarField>,
+    right: DensePolynomial<G::ScalarField>,
+    weight: DensePolynomial<G::ScalarField>,
   ) -> Self {
     assert_eq!(left.len(), right.len());
     assert_eq!(left.len(), weight.len());
@@ -85,7 +82,7 @@ impl<F: PrimeField> DotProductCircuit<F> {
     }
   }
 
-  pub fn evaluate(&self) -> F {
+  pub fn evaluate(&self) -> G::ScalarField {
     (0..self.left.len())
       .map(|i| self.left[i] * self.right[i] * self.weight[i])
       .sum()
@@ -114,69 +111,69 @@ impl<F: PrimeField> DotProductCircuit<F> {
 
 #[allow(dead_code)]
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-pub struct LayerProof<F: PrimeField> {
-  pub proof: SumcheckInstanceProof<F>,
-  pub claims: Vec<F>,
+pub struct LayerProof<G: CurveGroup> {
+  pub proof: SumcheckInstanceProof<G::ScalarField>,
+  pub claims: Vec<G::ScalarField>,
 }
 
 #[allow(dead_code)]
-impl<F: PrimeField + Absorb> LayerProof<F> {
+impl<G: CurveGroup> LayerProof<G> {
   pub fn verify(
     &self,
-    claim: F,
+    claim: G::ScalarField,
     num_rounds: usize,
     degree_bound: usize,
-    transcript: &mut PoseidonTranscript<F>,
-  ) -> (F, Vec<F>) {
+    transcript: &mut Transcript,
+  ) -> (G::ScalarField, Vec<G::ScalarField>) {
     self
       .proof
-      .verify(claim, num_rounds, degree_bound, transcript)
+      .verify::<G, _>(claim, num_rounds, degree_bound, transcript)
       .unwrap()
   }
 }
 
 #[allow(dead_code)]
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-pub struct LayerProofBatched<F: PrimeField> {
-  pub proof: SumcheckInstanceProof<F>,
-  pub claims_prod_left: Vec<F>,
-  pub claims_prod_right: Vec<F>,
+pub struct LayerProofBatched<G: CurveGroup> {
+  pub proof: SumcheckInstanceProof<G::ScalarField>,
+  pub claims_prod_left: Vec<G::ScalarField>,
+  pub claims_prod_right: Vec<G::ScalarField>,
 }
 
 #[allow(dead_code)]
-impl<F: PrimeField + Absorb> LayerProofBatched<F> {
+impl<G: CurveGroup> LayerProofBatched<G> {
   pub fn verify(
     &self,
-    claim: F,
+    claim: G::ScalarField,
     num_rounds: usize,
     degree_bound: usize,
-    transcript: &mut PoseidonTranscript<F>,
-  ) -> (F, Vec<F>) {
+    transcript: &mut Transcript,
+  ) -> (G::ScalarField, Vec<G::ScalarField>) {
     self
       .proof
-      .verify(claim, num_rounds, degree_bound, transcript)
+      .verify::<G, _>(claim, num_rounds, degree_bound, transcript)
       .unwrap()
   }
 }
 
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-pub struct ProductCircuitEvalProof<F: PrimeField> {
-  proof: Vec<LayerProof<F>>,
+pub struct ProductCircuitEvalProof<G: CurveGroup> {
+  proof: Vec<LayerProof<G>>,
 }
 
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-pub struct ProductCircuitEvalProofBatched<F: PrimeField> {
-  proof: Vec<LayerProofBatched<F>>,
-  claims_dotp: (Vec<F>, Vec<F>, Vec<F>),
+pub struct ProductCircuitEvalProofBatched<G: CurveGroup> {
+  proof: Vec<LayerProofBatched<G>>,
+  claims_dotp: (Vec<G::ScalarField>, Vec<G::ScalarField>, Vec<G::ScalarField>),
 }
 
-impl<F: PrimeField + Absorb> ProductCircuitEvalProof<F> {
+/*impl<G: CurveGroup> ProductCircuitEvalProof<G> {
   #![allow(dead_code)]
   pub fn prove(
-    circuit: &mut ProductCircuit<F>,
-    transcript: &mut PoseidonTranscript<F>,
-  ) -> (Self, F, Vec<F>) {
-    let mut proof: Vec<LayerProof<F>> = Vec::new();
+    circuit: &mut ProductCircuit<G>,
+    transcript: &mut Transcript,
+  ) -> (Self, G::ScalarField, Vec<G::ScalarField>) {
+    let mut proof: Vec<LayerProof<G>> = Vec::new();
     let num_layers = circuit.left_vec.len();
 
     let mut claim = circuit.evaluate();
@@ -188,7 +185,7 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProof<F> {
       assert_eq!(poly_C.len(), len / 2);
 
       let num_rounds_prod = poly_C.len().log_2();
-      let comb_func_prod = |poly_A_comp: &F, poly_B_comp: &F, poly_C_comp: &F| -> F {
+      let comb_func_prod = |poly_A_comp: &G::ScalarField, poly_B_comp: &G::ScalarField, poly_C_comp: &G::ScalarField| -> G::ScalarField {
         (*poly_A_comp) * poly_B_comp * poly_C_comp
       };
       let (proof_prod, rand_prod, claims_prod) = SumcheckInstanceProof::prove_cubic(
@@ -221,10 +218,14 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProof<F> {
     (ProductCircuitEvalProof { proof }, claim, rand)
   }
 
-  pub fn verify(&self, eval: F, len: usize, transcript: &mut PoseidonTranscript<F>) -> (F, Vec<F>) {
+  pub fn verify(
+    &self,
+    eval: G::ScalarField,
+    len: usize,
+    transcript: &mut Transcript) -> (G::ScalarField, Vec<G::ScalarField>) {
     let num_layers = len.log_2();
     let mut claim = eval;
-    let mut rand: Vec<F> = Vec::new();
+    let mut rand: Vec<G::ScalarField> = Vec::new();
     //let mut num_rounds = 0;
     assert_eq!(self.proof.len(), num_layers);
     for (num_rounds, i) in (0..num_layers).enumerate() {
@@ -235,14 +236,14 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProof<F> {
       transcript.append_scalar(b"", &claims_prod[1]);
 
       assert_eq!(rand.len(), rand_prod.len());
-      let eq: F = (0..rand.len())
-        .map(|i| rand[i] * rand_prod[i] + (F::one() - rand[i]) * (F::one() - rand_prod[i]))
+      let eq: G::ScalarField = (0..rand.len())
+        .map(|i| rand[i] * rand_prod[i] + (G::ScalarField::one() - rand[i]) * (G::ScalarField::one() - rand_prod[i]))
         .product();
       assert_eq!(claims_prod[0] * claims_prod[1] * eq, claim_last);
 
       // produce a random challenge
       let r_layer = transcript.challenge_scalar(b"");
-      claim = (F::one() - r_layer) * claims_prod[0] + r_layer * claims_prod[1];
+      claim = (G::ScalarField::one() - r_layer) * claims_prod[0] + r_layer * claims_prod[1];
       let mut ext = vec![r_layer];
       ext.extend(rand_prod);
       rand = ext;
@@ -250,23 +251,24 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProof<F> {
 
     (claim, rand)
   }
-}
+}*/
 
-impl<F: PrimeField + Absorb> ProductCircuitEvalProofBatched<F> {
-  pub fn prove(
-    prod_circuit_vec: &mut Vec<&mut ProductCircuit<F>>,
-    dotp_circuit_vec: &mut Vec<&mut DotProductCircuit<F>>,
-    transcript: &mut PoseidonTranscript<F>,
-  ) -> (Self, Vec<F>) {
+/*
+impl<G: CurveGroup> ProductCircuitEvalProofBatched<G> {
+  pub fn prove<T: ProofTranscript<G>>(
+    prod_circuit_vec: &mut Vec<&mut ProductCircuit<G>>,
+    dotp_circuit_vec: &mut Vec<&mut DotProductCircuit<G>>,
+    transcript: &mut T,
+  ) -> (Self, Vec<G::ScalarField>) {
     assert!(!prod_circuit_vec.is_empty());
 
     let mut claims_dotp_final = (Vec::new(), Vec::new(), Vec::new());
 
-    let mut proof_layers: Vec<LayerProofBatched<F>> = Vec::new();
+    let mut proof_layers: Vec<LayerProofBatched<G::ScalarField>> = Vec::new();
     let num_layers = prod_circuit_vec[0].left_vec.len();
     let mut claims_to_verify = (0..prod_circuit_vec.len())
       .map(|i| prod_circuit_vec[i].evaluate())
-      .collect::<Vec<F>>();
+      .collect::<Vec<G::ScalarField>>();
     let mut rand = Vec::new();
     for layer_id in (0..num_layers).rev() {
       // prepare paralell instance that share poly_C first
@@ -277,12 +279,12 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProofBatched<F> {
       assert_eq!(poly_C_par.len(), len / 2);
 
       let num_rounds_prod = poly_C_par.len().log_2();
-      let comb_func_prod = |poly_A_comp: &F, poly_B_comp: &F, poly_C_comp: &F| -> F {
+      let comb_func_prod = |poly_A_comp: &G::ScalarField, poly_B_comp: &G::ScalarField, poly_C_comp: &G::ScalarField| -> G::ScalarField {
         (*poly_A_comp) * poly_B_comp * poly_C_comp
       };
 
-      let mut poly_A_batched_par: Vec<&mut DensePolynomial<F>> = Vec::new();
-      let mut poly_B_batched_par: Vec<&mut DensePolynomial<F>> = Vec::new();
+      let mut poly_A_batched_par: Vec<&mut DensePolynomial<G::ScalarField>> = Vec::new();
+      let mut poly_B_batched_par: Vec<&mut DensePolynomial<G::ScalarField>> = Vec::new();
       for prod_circuit in prod_circuit_vec.iter_mut() {
         poly_A_batched_par.push(&mut prod_circuit.left_vec[layer_id]);
         poly_B_batched_par.push(&mut prod_circuit.right_vec[layer_id])
@@ -294,9 +296,9 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProofBatched<F> {
       );
 
       // prepare sequential instances that don't share poly_C
-      let mut poly_A_batched_seq: Vec<&mut DensePolynomial<F>> = Vec::new();
-      let mut poly_B_batched_seq: Vec<&mut DensePolynomial<F>> = Vec::new();
-      let mut poly_C_batched_seq: Vec<&mut DensePolynomial<F>> = Vec::new();
+      let mut poly_A_batched_seq: Vec<&mut DensePolynomial<G::ScalarField>> = Vec::new();
+      let mut poly_B_batched_seq: Vec<&mut DensePolynomial<G::ScalarField>> = Vec::new();
+      let mut poly_C_batched_seq: Vec<&mut DensePolynomial<G::ScalarField>> = Vec::new();
       if layer_id == 0 && !dotp_circuit_vec.is_empty() {
         // add additional claims
         for item in dotp_circuit_vec.iter() {
@@ -355,7 +357,7 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProofBatched<F> {
 
       claims_to_verify = (0..prod_circuit_vec.len())
         .map(|i| claims_prod_left[i] + r_layer * (claims_prod_right[i] - claims_prod_left[i]))
-        .collect::<Vec<F>>();
+        .collect::<Vec<G::ScalarField>>();
 
       let mut ext = vec![r_layer];
       ext.extend(rand_prod);
@@ -377,27 +379,27 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProofBatched<F> {
     )
   }
 
-  pub fn verify(
+  pub fn verify<T: ProofTranscript<G>>(
     &self,
-    claims_prod_vec: &[F],
-    claims_dotp_vec: &[F],
+    claims_prod_vec: &[G::ScalarField],
+    claims_dotp_vec: &[G::ScalarField],
     len: usize,
-    transcript: &mut PoseidonTranscript<F>,
-  ) -> (Vec<F>, Vec<F>, Vec<F>) {
+    transcript: &mut T,
+  ) -> (Vec<G::ScalarField>, Vec<G::ScalarField>, Vec<G::ScalarField>) {
     let num_layers = len.log_2();
-    let mut rand: Vec<F> = Vec::new();
+    let mut rand: Vec<G::ScalarField> = Vec::new();
     //let mut num_rounds = 0;
     assert_eq!(self.proof.len(), num_layers);
 
     let mut claims_to_verify = claims_prod_vec.to_owned();
-    let mut claims_to_verify_dotp: Vec<F> = Vec::new();
+    let mut claims_to_verify_dotp: Vec<G::ScalarField> = Vec::new();
     for (num_rounds, i) in (0..num_layers).enumerate() {
       if i == num_layers - 1 {
         claims_to_verify.extend(claims_dotp_vec);
       }
 
       // produce random coefficients, one for each instance
-      let coeff_vec: Vec<F> = transcript.challenge_scalar_vec(b"", claims_to_verify.len());
+      let coeff_vec: Vec<G::ScalarField> = transcript.challenge_scalar_vec(b"", claims_to_verify.len());
 
       // produce a joint claim
       let claim = (0..claims_to_verify.len())
@@ -417,10 +419,10 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProofBatched<F> {
       }
 
       assert_eq!(rand.len(), rand_prod.len());
-      let eq: F = (0..rand.len())
-        .map(|i| rand[i] * rand_prod[i] + (F::one() - rand[i]) * (F::one() - rand_prod[i]))
+      let eq: G::ScalarField = (0..rand.len())
+        .map(|i| rand[i] * rand_prod[i] + (G::ScalarField::one() - rand[i]) * (G::ScalarField::one() - rand_prod[i]))
         .product();
-      let mut claim_expected: F = (0..claims_prod_vec.len())
+      let mut claim_expected: G::ScalarField = (0..claims_prod_vec.len())
         .map(|i| coeff_vec[i] * (claims_prod_left[i] * claims_prod_right[i] * eq))
         .sum();
 
@@ -475,4 +477,4 @@ impl<F: PrimeField + Absorb> ProductCircuitEvalProofBatched<F> {
     }
     (claims_to_verify, claims_to_verify_dotp, rand)
   }
-}
+}*/
