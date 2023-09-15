@@ -6,7 +6,7 @@ use crate::poly::eq_poly::EqPolynomial;
 
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
-use super::product_tree::{DotProductCircuit, ProductCircuit, ProductCircuitEvalProofBatched};
+use crate::r1cs::product_tree::{DotProductCircuit, ProductCircuit, ProductCircuitEvalProofBatched};
 use crate::utils::random::RandomTape;
 use ark_curve25519::Fr as Scalar;
 use crate::utils::transcript::{AppendToTranscript, ProofTranscript};
