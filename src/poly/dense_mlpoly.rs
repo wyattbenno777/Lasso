@@ -260,6 +260,21 @@ impl<F: PrimeField> DensePolynomial<F> {
     DensePolynomial::new(Z)
   }
 
+  pub fn merge_r1cs<'a, I>(polys: I) -> DensePolynomial<F>
+  where
+    I: IntoIterator<Item = &'a DensePolynomial<F>>,
+  {
+    let mut Z: Vec<F> = Vec::new();
+    for poly in polys.into_iter() {
+      Z.extend(poly.vec());
+    }
+
+    // pad the polynomial with zero polynomial at the end
+    Z.resize(Z.len().next_power_of_two(), F::zero());
+
+    DensePolynomial::new(Z)
+  }
+
   pub fn from_usize(Z: &[usize]) -> Self {
     DensePolynomial::new(
       (0..Z.len())

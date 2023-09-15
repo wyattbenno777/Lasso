@@ -408,13 +408,16 @@ impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProofBatched<F, G> {
     )
   }
 
-  /*pub fn verify<T: ProofTranscript<G>>(
+  pub fn verify(
     &self,
     claims_prod_vec: &[F],
     claims_dotp_vec: &[F],
     len: usize,
-    transcript: &mut T,
-  ) -> (Vec<F>, Vec<F>, Vec<F>) {
+    transcript: &mut Transcript,
+  ) -> (Vec<F>, Vec<F>, Vec<F>)
+  where
+    G: CurveGroup<ScalarField = F>,
+  {
     let num_layers = len.log_2();
     let mut rand: Vec<F> = Vec::new();
     //let mut num_rounds = 0;
@@ -428,7 +431,11 @@ impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProofBatched<F, G> {
       }
 
       // produce random coefficients, one for each instance
-      let coeff_vec: Vec<F> = transcript.challenge_scalar_vec(b"", claims_to_verify.len());
+      let coeff_vec: Vec<F> = <Transcript as ProofTranscript<G>>::challenge_vector(
+        transcript,
+        b"",
+        claims_to_verify.len(),
+      );
 
       // produce a joint claim
       let claim = (0..claims_to_verify.len())
@@ -443,8 +450,8 @@ impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProofBatched<F, G> {
       assert_eq!(claims_prod_right.len(), claims_prod_vec.len());
 
       for i in 0..claims_prod_vec.len() {
-        transcript.append_scalar(b"", &claims_prod_left[i]);
-        transcript.append_scalar(b"", &claims_prod_right[i]);
+        <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_prod_left[i]);
+        <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_prod_right[i]);
       }
 
       assert_eq!(rand.len(), rand_prod.len());
@@ -460,9 +467,9 @@ impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProofBatched<F, G> {
         let num_prod_instances = claims_prod_vec.len();
         let (claims_dotp_left, claims_dotp_right, claims_dotp_weight) = &self.claims_dotp;
         for i in 0..claims_dotp_left.len() {
-          transcript.append_scalar(b"", &claims_dotp_left[i]);
-          transcript.append_scalar(b"", &claims_dotp_right[i]);
-          transcript.append_scalar(b"", &claims_dotp_weight[i]);
+          <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_dotp_left[i]);
+          <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_dotp_right[i]);
+          <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_dotp_weight[i]);
 
           claim_expected += coeff_vec[i + num_prod_instances]
             * claims_dotp_left[i]
@@ -474,7 +481,8 @@ impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProofBatched<F, G> {
       assert_eq!(claim_expected, claim_last);
 
       // produce a random challenge
-      let r_layer = transcript.challenge_scalar(b"");
+      let r_layer =
+      <Transcript as ProofTranscript<G>>::challenge_scalar(transcript, b"");
 
       claims_to_verify = (0..claims_prod_left.len())
         .map(|i| claims_prod_left[i] + r_layer * (claims_prod_right[i] - claims_prod_left[i]))
@@ -505,5 +513,5 @@ impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProofBatched<F, G> {
       rand = ext;
     }
     (claims_to_verify, claims_to_verify_dotp, rand)
-  }*/
+  }
 }

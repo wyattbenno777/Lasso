@@ -69,6 +69,7 @@ impl<G: CurveGroup> ProofTranscript<G> for Transcript {
       .map(|_i| <Self as ProofTranscript<G>>::challenge_scalar(self, label))
       .collect::<Vec<G::ScalarField>>()
   }
+
 }
 
 pub trait AppendToTranscript<G: CurveGroup> {
