@@ -273,18 +273,21 @@ impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProof<F, G> {
   }
 }
 
-/*
-impl<F: PrimeField> ProductCircuitEvalProofBatched<G> {
-  pub fn prove<T: ProofTranscript<G>>(
-    prod_circuit_vec: &mut Vec<&mut ProductCircuit<G>>,
-    dotp_circuit_vec: &mut Vec<&mut DotProductCircuit<G>>,
-    transcript: &mut T,
-  ) -> (Self, Vec<F>) {
+
+impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProofBatched<F, G> {
+  pub fn prove(
+    prod_circuit_vec: &mut Vec<&mut ProductCircuit<F>>,
+    dotp_circuit_vec: &mut Vec<&mut DotProductCircuit<F>>,
+    transcript: &mut Transcript,
+  ) -> (Self, Vec<F>)
+  where
+    G: CurveGroup<ScalarField = F>,
+  {
     assert!(!prod_circuit_vec.is_empty());
 
     let mut claims_dotp_final = (Vec::new(), Vec::new(), Vec::new());
 
-    let mut proof_layers: Vec<LayerProofBatched<F>> = Vec::new();
+    let mut proof_layers: Vec<LayerProofBatched<F, G>> = Vec::new();
     let num_layers = prod_circuit_vec[0].left_vec.len();
     let mut claims_to_verify = (0..prod_circuit_vec.len())
       .map(|i| prod_circuit_vec[i].evaluate())
@@ -341,12 +344,16 @@ impl<F: PrimeField> ProductCircuitEvalProofBatched<G> {
       );
 
       // produce a fresh set of coeffs and a joint claim
-      let coeff_vec = transcript.challenge_scalar_vec(b"", claims_to_verify.len());
+      let coeff_vec: Vec<F> = <Transcript as ProofTranscript<G>>::challenge_vector(
+        transcript,
+        b"rand_coeffs_next_layer",
+        claims_to_verify.len(),
+      );
       let claim = (0..claims_to_verify.len())
         .map(|i| claims_to_verify[i] * coeff_vec[i])
         .sum();
 
-      let (proof, rand_prod, claims_prod, claims_dotp) = SumcheckInstanceProof::prove_cubic_batched(
+      let (proof, rand_prod, claims_prod, claims_dotp) = SumcheckInstanceProof::<F>::prove_cubic_batched_r1cs::<_, G>(
         &claim,
         num_rounds_prod,
         poly_vec_par,
@@ -358,22 +365,23 @@ impl<F: PrimeField> ProductCircuitEvalProofBatched<G> {
 
       let (claims_prod_left, claims_prod_right, _claims_eq) = claims_prod;
       for i in 0..prod_circuit_vec.len() {
-        transcript.append_scalar(b"", &claims_prod_left[i]);
-        transcript.append_scalar(b"", &claims_prod_right[i]);
+        <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_prod_left[i]);
+        <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_prod_right[i]);
       }
 
       if layer_id == 0 && !dotp_circuit_vec.is_empty() {
         let (claims_dotp_left, claims_dotp_right, claims_dotp_weight) = claims_dotp;
         for i in 0..dotp_circuit_vec.len() {
-          transcript.append_scalar(b"", &claims_dotp_left[i]);
-          transcript.append_scalar(b"", &claims_dotp_right[i]);
-          transcript.append_scalar(b"", &claims_dotp_weight[i]);
+          <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_dotp_left[i]);
+          <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_dotp_right[i]);
+          <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &claims_dotp_weight[i]);
         }
         claims_dotp_final = (claims_dotp_left, claims_dotp_right, claims_dotp_weight);
       }
 
-      // produce a random challenge to condense two claims into a single claim
-      let r_layer = transcript.challenge_scalar(b"");
+      // produce a random challenge to condense two claims into a single claim;
+      let r_layer =
+      <Transcript as ProofTranscript<G>>::challenge_scalar(transcript, b"");
 
       claims_to_verify = (0..prod_circuit_vec.len())
         .map(|i| claims_prod_left[i] + r_layer * (claims_prod_right[i] - claims_prod_left[i]))
@@ -387,6 +395,7 @@ impl<F: PrimeField> ProductCircuitEvalProofBatched<G> {
         proof,
         claims_prod_left,
         claims_prod_right,
+        _marker: PhantomData,
       });
     }
 
@@ -399,7 +408,7 @@ impl<F: PrimeField> ProductCircuitEvalProofBatched<G> {
     )
   }
 
-  pub fn verify<T: ProofTranscript<G>>(
+  /*pub fn verify<T: ProofTranscript<G>>(
     &self,
     claims_prod_vec: &[F],
     claims_dotp_vec: &[F],
@@ -496,5 +505,5 @@ impl<F: PrimeField> ProductCircuitEvalProofBatched<G> {
       rand = ext;
     }
     (claims_to_verify, claims_to_verify_dotp, rand)
-  }
-}*/
+  }*/
+}
