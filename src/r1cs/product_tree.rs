@@ -120,6 +120,24 @@ pub struct LayerProof<F: PrimeField, G: CurveGroup> {
   _marker: PhantomData<G>,
 }
 
+/*impl<T> CanonicalSerialize for MyStruct<T> {
+  fn serialize<W: Write>(&self, writer: W) -> Result<(), SerializationError> {
+    self.proof.serialize(writer);
+    self.claims.serialize(writer);
+  }
+}
+
+impl<T> CanonicalDeserialize for MyStruct<T> {
+  fn deserialize<R: Read>(reader: R) -> Result<Self, SerializationError> {
+      let proof = i32::deserialize(reader)?;
+      Ok(MyStruct {
+          proof,
+          claims,
+          _marker: PhantomData,
+      })
+  }
+}*/
+
 #[allow(dead_code)]
 impl<F: PrimeField, G: CurveGroup> LayerProof<F, G> {
   pub fn verify(

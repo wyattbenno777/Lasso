@@ -1051,29 +1051,32 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
   }
 }
 
-/*#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-struct ProductLayerProof {
-  eval_row: (Scalar, Vec<F>, Vec<F>, F),
-  eval_col: (Scalar, Vec<F>, Vec<F>, F),
+#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
+struct ProductLayerProof<F: PrimeField, G: CurveGroup> {
+  eval_row: (F, Vec<F>, Vec<F>, F),
+  eval_col: (F, Vec<F>, Vec<F>, F),
   eval_val: (Vec<F>, Vec<F>),
-  proof_mem: ProductCircuitEvalProofBatched,
-  proof_ops: ProductCircuitEvalProofBatched,
+  proof_mem: ProductCircuitEvalProofBatched<F, G>,
+  proof_ops: ProductCircuitEvalProofBatched<F, G>,
 }
 
-impl ProductLayerProof {
+impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
   fn protocol_name() -> &'static [u8] {
     b"Sparse polynomial product layer proof"
   }
 
   pub fn prove(
-    row_prod_layer: &mut ProductLayer,
-    col_prod_layer: &mut ProductLayer,
-    dense: &MultiSparseMatPolynomialAsDense,
-    derefs: &Derefs,
+    row_prod_layer: &mut ProductLayer<F>,
+    col_prod_layer: &mut ProductLayer<F>,
+    dense: &MultiSparseMatPolynomialAsDense<F>,
+    derefs: &Derefs<F>,
     eval: &[F],
     transcript: &mut Transcript,
-  ) -> (Self, Vec<F>, Vec<F>) {
-    transcript.append_protocol_name(ProductLayerProof::protocol_name());
+  ) -> (Self, Vec<F>, Vec<F>)
+  where
+    G: CurveGroup<ScalarField = F>,
+  {
+    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, ProductLayerProof::<F, G>::protocol_name());
 
     let row_eval_init = row_prod_layer.init.evaluate();
     let row_eval_audit = row_prod_layer.audit.evaluate();
@@ -1085,16 +1088,16 @@ impl ProductLayerProof {
       .collect::<Vec<F>>();
 
     // subset check
-    let ws: Scalar = (0..row_eval_write.len())
+    let ws: F = (0..row_eval_write.len())
       .map(|i| row_eval_write[i])
       .product();
-    let rs: Scalar = (0..row_eval_read.len()).map(|i| row_eval_read[i]).product();
+    let rs: F = (0..row_eval_read.len()).map(|i| row_eval_read[i]).product();
     assert_eq!(row_eval_init * ws, rs * row_eval_audit);
 
-    row_eval_init.append_to_transcript(b"claim_row_eval_init", transcript);
-    row_eval_read.append_to_transcript(b"claim_row_eval_read", transcript);
-    row_eval_write.append_to_transcript(b"claim_row_eval_write", transcript);
-    row_eval_audit.append_to_transcript(b"claim_row_eval_audit", transcript);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_row_eval_init", &row_eval_init);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_row_eval_read", &row_eval_read);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_row_eval_write", &row_eval_write);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_row_eval_audit", &row_eval_audit);
 
     let col_eval_init = col_prod_layer.init.evaluate();
     let col_eval_audit = col_prod_layer.audit.evaluate();
@@ -1106,23 +1109,24 @@ impl ProductLayerProof {
       .collect();
 
     // subset check
-    let ws: Scalar = (0..col_eval_write.len())
+    let ws: F = (0..col_eval_write.len())
       .map(|i| col_eval_write[i])
       .product();
-    let rs: Scalar = (0..col_eval_read.len()).map(|i| col_eval_read[i]).product();
+    let rs: F = (0..col_eval_read.len()).map(|i| col_eval_read[i]).product();
     assert_eq!(col_eval_init * ws, rs * col_eval_audit);
 
-    col_eval_init.append_to_transcript(b"claim_col_eval_init", transcript);
-    col_eval_read.append_to_transcript(b"claim_col_eval_read", transcript);
-    col_eval_write.append_to_transcript(b"claim_col_eval_write", transcript);
-    col_eval_audit.append_to_transcript(b"claim_col_eval_audit", transcript);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_col_eval_init", &col_eval_init);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_col_eval_read", &col_eval_read);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_col_eval_write", &col_eval_write);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_col_eval_audit", &col_eval_audit);
+
 
     // prepare dotproduct circuit for batching then with ops-related product circuits
     assert_eq!(eval.len(), derefs.row_ops_val.len());
     assert_eq!(eval.len(), derefs.col_ops_val.len());
     assert_eq!(eval.len(), dense.val.len());
-    let mut dotp_circuit_left_vec: Vec<DotProductCircuit> = Vec::new();
-    let mut dotp_circuit_right_vec: Vec<DotProductCircuit> = Vec::new();
+    let mut dotp_circuit_left_vec: Vec<DotProductCircuit<F>> = Vec::new();
+    let mut dotp_circuit_right_vec: Vec<DotProductCircuit<F>> = Vec::new();
     let mut eval_dotp_left_vec: Vec<F> = Vec::new();
     let mut eval_dotp_right_vec: Vec<F> = Vec::new();
     for i in 0..derefs.row_ops_val.len() {
@@ -1138,8 +1142,9 @@ impl ProductLayerProof {
       let (eval_dotp_left, eval_dotp_right) =
         (dotp_circuit_left.evaluate(), dotp_circuit_right.evaluate());
 
-      eval_dotp_left.append_to_transcript(b"claim_eval_dotp_left", transcript);
-      eval_dotp_right.append_to_transcript(b"claim_eval_dotp_right", transcript);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_eval_dotp_left", &eval_dotp_left);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_eval_dotp_right", &eval_dotp_right);
+
       assert_eq!(eval_dotp_left + eval_dotp_right, eval[i]);
       eval_dotp_left_vec.push(eval_dotp_left);
       eval_dotp_right_vec.push(eval_dotp_right);
@@ -1236,7 +1241,7 @@ impl ProductLayerProof {
     };
 
     let mut product_layer_proof_encoded: Vec<u8> = Vec::new();
-    product_layer_proof.serialize(&mut product_layer_proof_encoded).unwrap();
+    product_layer_proof.serialize_compressed(&mut product_layer_proof_encoded).unwrap();
     let msg = format!(
       "len_product_layer_proof {:?}",
       product_layer_proof_encoded.len()
@@ -1260,8 +1265,11 @@ impl ProductLayerProof {
       Vec<F>,
     ),
     ProofVerifyError,
-  > {
-    transcript.append_protocol_name(ProductLayerProof::protocol_name());
+  >
+  where
+    G: CurveGroup<ScalarField = F>,
+  {
+    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, ProductLayerProof::<F, G>::protocol_name());
 
     let num_instances = eval.len();
 
@@ -1269,31 +1277,31 @@ impl ProductLayerProof {
     let (row_eval_init, row_eval_read, row_eval_write, row_eval_audit) = &self.eval_row;
     assert_eq!(row_eval_write.len(), num_instances);
     assert_eq!(row_eval_read.len(), num_instances);
-    let ws: Scalar = (0..row_eval_write.len())
+    let ws: F = (0..row_eval_write.len())
       .map(|i| row_eval_write[i])
       .product();
-    let rs: Scalar = (0..row_eval_read.len()).map(|i| row_eval_read[i]).product();
+    let rs: F = (0..row_eval_read.len()).map(|i| row_eval_read[i]).product();
     assert_eq!( ws * row_eval_init , rs * row_eval_audit);
 
-    row_eval_init.append_to_transcript(b"claim_row_eval_init", transcript);
-    row_eval_read.append_to_transcript(b"claim_row_eval_read", transcript);
-    row_eval_write.append_to_transcript(b"claim_row_eval_write", transcript);
-    row_eval_audit.append_to_transcript(b"claim_row_eval_audit", transcript);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_row_eval_init", &row_eval_init);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_row_eval_read", &row_eval_read);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_row_eval_write", &row_eval_write);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_row_eval_audit", &row_eval_audit);
 
     // subset check
     let (col_eval_init, col_eval_read, col_eval_write, col_eval_audit) = &self.eval_col;
     assert_eq!(col_eval_write.len(), num_instances);
     assert_eq!(col_eval_read.len(), num_instances);
-    let ws: Scalar = (0..col_eval_write.len())
+    let ws: F = (0..col_eval_write.len())
       .map(|i| col_eval_write[i])
       .product();
-    let rs: Scalar = (0..col_eval_read.len()).map(|i| col_eval_read[i]).product();
+    let rs: F = (0..col_eval_read.len()).map(|i| col_eval_read[i]).product();
     assert_eq!(ws * col_eval_init, rs * col_eval_audit);
 
-    col_eval_init.append_to_transcript(b"claim_col_eval_init", transcript);
-    col_eval_read.append_to_transcript(b"claim_col_eval_read", transcript);
-    col_eval_write.append_to_transcript(b"claim_col_eval_write", transcript);
-    col_eval_audit.append_to_transcript(b"claim_col_eval_audit", transcript);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_col_eval_init", &col_eval_init);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_col_eval_read", &col_eval_read);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_col_eval_write", &col_eval_write);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_col_eval_audit", &col_eval_audit);
 
     // verify the evaluation of the sparse polynomial
     let (eval_dotp_left, eval_dotp_right) = &self.eval_val;
@@ -1302,8 +1310,8 @@ impl ProductLayerProof {
     let mut claims_dotp_circuit: Vec<F> = Vec::new();
     for i in 0..num_instances {
       assert_eq!(eval_dotp_left[i] + eval_dotp_right[i], eval[i]);
-      eval_dotp_left[i].append_to_transcript(b"claim_eval_dotp_left", transcript);
-      eval_dotp_right[i].append_to_transcript(b"claim_eval_dotp_right", transcript);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_eval_dotp_left", &eval_dotp_left[i]);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_eval_dotp_right", &eval_dotp_right[i]);
 
       claims_dotp_circuit.push(eval_dotp_left[i]);
       claims_dotp_circuit.push(eval_dotp_right[i]);
@@ -1338,7 +1346,7 @@ impl ProductLayerProof {
     Ok((claims_mem, rand_mem, claims_ops, claims_dotp, rand_ops))
   }
 }
-
+/*
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 struct PolyEvalNetworkProof {
   proof_prod_layer: ProductLayerProof,
@@ -1352,8 +1360,8 @@ impl PolyEvalNetworkProof {
 
   pub fn prove(
     network: &mut PolyEvalNetwork,
-    dense: &MultiSparseMatPolynomialAsDense,
-    derefs: &Derefs,
+    dense: &MultiSparseMatPolynomialAsDense<F>,
+    derefs: &Derefs<F>,
     evals: &[F],
     gens: &SparseMatPolyCommitmentGens,
     transcript: &mut Transcript,
@@ -1481,7 +1489,7 @@ impl SparseMatPolyEvalProof {
   }
 
   pub fn prove(
-    dense: &MultiSparseMatPolynomialAsDense,
+    dense: &MultiSparseMatPolynomialAsDense<F>,
     rx: &[F], // point at which the polynomial is evaluated
     ry: &[F],
     evals: &[F], // a vector evaluation of \widetilde{M}(r = (rx,ry)) for each M
