@@ -4,7 +4,6 @@
 use crate::poly::dense_mlpoly::{DensePolynomial, PolyCommitment, PolyCommitmentGens, PolyEvalProof};
 use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::identity_poly::IdentityPolynomial;
-use crate::poly::unipoly::{UniPoly};
 
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
@@ -17,7 +16,7 @@ use core::cmp::Ordering;
 use merlin::Transcript;
 use ark_serialize::*;
 use ark_ff::{One, Zero, Field};
-use ark_ec::pairing::Pairing;
+//use ark_ec::pairing::Pairing;
 use std::marker::PhantomData;
 
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize, Clone)]
@@ -1346,28 +1345,31 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
     Ok((claims_mem, rand_mem, claims_ops, claims_dotp, rand_ops))
   }
 }
-/*
+
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-struct PolyEvalNetworkProof {
-  proof_prod_layer: ProductLayerProof,
-  proof_hash_layer: HashLayerProof,
+struct PolyEvalNetworkProof<F: PrimeField, G: CurveGroup>  {
+  proof_prod_layer: ProductLayerProof<F, G>,
+  proof_hash_layer: HashLayerProof<F, G>,
 }
 
-impl PolyEvalNetworkProof {
+impl<F: PrimeField, G: CurveGroup>  PolyEvalNetworkProof<F, G> {
   fn protocol_name() -> &'static [u8] {
     b"Sparse polynomial evaluation proof"
   }
 
   pub fn prove(
-    network: &mut PolyEvalNetwork,
+    network: &mut PolyEvalNetwork<F>,
     dense: &MultiSparseMatPolynomialAsDense<F>,
     derefs: &Derefs<F>,
     evals: &[F],
-    gens: &SparseMatPolyCommitmentGens,
+    gens: &SparseMatPolyCommitmentGens<G>,
     transcript: &mut Transcript,
-    random_tape: &mut RandomTape,
-  ) -> Self {
-    transcript.append_protocol_name(PolyEvalNetworkProof::protocol_name());
+    random_tape: &mut RandomTape<G>,
+  ) -> Self
+  where
+    G: CurveGroup<ScalarField = F>,
+  {
+    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, PolyEvalNetworkProof::<F, G>::protocol_name());
 
     let (proof_prod_layer, rand_mem, rand_ops) = ProductLayerProof::prove(
       &mut network.row_layers.prod_layer,
@@ -1396,17 +1398,20 @@ impl PolyEvalNetworkProof {
 
   pub fn verify(
     &self,
-    comm: &SparseMatPolyCommitment,
-    comm_derefs: &DerefsCommitment,
+    comm: &SparseMatPolyCommitment<G>,
+    comm_derefs: &DerefsCommitment<G>,
     evals: &[F],
-    gens: &SparseMatPolyCommitmentGens,
+    gens: &SparseMatPolyCommitmentGens<G>,
     rx: &[F],
     ry: &[F],
     r_mem_check: &(F, F),
     nz: usize,
     transcript: &mut Transcript,
-  ) -> Result<(), ProofVerifyError> {
-    transcript.append_protocol_name(PolyEvalNetworkProof::protocol_name());
+  ) -> Result<(), ProofVerifyError>
+  where
+    G: CurveGroup<ScalarField = F>,
+  {
+    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, PolyEvalNetworkProof::<F, G>::protocol_name());
 
     let num_instances = evals.len();
     let (r_hash, r_multiset_check) = r_mem_check;
@@ -1460,12 +1465,12 @@ impl PolyEvalNetworkProof {
 }
 
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-pub struct SparseMatPolyEvalProof {
-  comm_derefs: DerefsCommitment,
-  poly_eval_network_proof: PolyEvalNetworkProof,
+pub struct SparseMatPolyEvalProof<F: PrimeField, G: CurveGroup> {
+  comm_derefs: DerefsCommitment<G>,
+  poly_eval_network_proof: PolyEvalNetworkProof<F, G>,
 }
 
-impl SparseMatPolyEvalProof {
+impl<F: PrimeField, G: CurveGroup> SparseMatPolyEvalProof<F, G> {
   fn protocol_name() -> &'static [u8] {
     b"Sparse polynomial evaluation proof"
   }
@@ -1493,18 +1498,21 @@ impl SparseMatPolyEvalProof {
     rx: &[F], // point at which the polynomial is evaluated
     ry: &[F],
     evals: &[F], // a vector evaluation of \widetilde{M}(r = (rx,ry)) for each M
-    gens: &SparseMatPolyCommitmentGens,
+    gens: &SparseMatPolyCommitmentGens<G>,
     transcript: &mut Transcript,
-    random_tape: &mut RandomTape,
-  ) -> SparseMatPolyEvalProof {
-    transcript.append_protocol_name(SparseMatPolyEvalProof::protocol_name());
+    random_tape: &mut RandomTape<G>,
+  ) -> SparseMatPolyEvalProof<F, G>
+  where
+      G: CurveGroup<ScalarField = F>,
+  {
+    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, SparseMatPolyEvalProof::<F, G>::protocol_name());
 
     // ensure there is one eval for each polynomial in dense
     assert_eq!(evals.len(), dense.batch_size);
 
     let (mem_rx, mem_ry) = {
       // equalize the lengths of rx and ry
-      let (rx_ext, ry_ext) = SparseMatPolyEvalProof::equalize(rx, ry);
+      let (rx_ext, ry_ext) = SparseMatPolyEvalProof::<F, G>::equalize(rx, ry);
       let poly_rx = EqPolynomial::new(rx_ext).evals();
       let poly_ry = EqPolynomial::new(ry_ext).evals();
       (poly_rx, poly_ry)
@@ -1521,49 +1529,53 @@ impl SparseMatPolyEvalProof {
 
     let poly_eval_network_proof = {
       // produce a random element from the transcript for hash function
-      let r_mem_check = transcript.challenge_vector(b"challenge_r_hash", 2);
+    let r_mem_check =
+    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_r_hash", 2);
 
-      // build a network to evaluate the sparse polynomial
-      let mut net = PolyEvalNetwork::new(
-        dense,
-        &derefs,
-        &mem_rx,
-        &mem_ry,
-        &(r_mem_check[0], r_mem_check[1]),
-      );
+    // build a network to evaluate the sparse polynomial
+    let mut net = PolyEvalNetwork::new(
+      dense,
+      &derefs,
+      &mem_rx,
+      &mem_ry,
+      &(r_mem_check[0], r_mem_check[1]),
+    );
 
-      let poly_eval_network_proof = PolyEvalNetworkProof::prove(
-        &mut net,
-        dense,
-        &derefs,
-        evals,
-        gens,
-        transcript,
-        random_tape,
-      );
+    let poly_eval_network_proof = PolyEvalNetworkProof::prove(
+      &mut net,
+      dense,
+      &derefs,
+      evals,
+      gens,
+      transcript,
+      random_tape,
+    );
 
-      poly_eval_network_proof
-    };
+    poly_eval_network_proof
+  };
 
-    SparseMatPolyEvalProof {
-      comm_derefs,
-      poly_eval_network_proof,
-    }
+  SparseMatPolyEvalProof {
+    comm_derefs,
+    poly_eval_network_proof,
+  }
   }
 
   pub fn verify(
     &self,
-    comm: &SparseMatPolyCommitment,
+    comm: &SparseMatPolyCommitment<G>,
     rx: &[F], // point at which the polynomial is evaluated
     ry: &[F],
     evals: &[F], // evaluation of \widetilde{M}(r = (rx,ry))
-    gens: &SparseMatPolyCommitmentGens,
+    gens: &SparseMatPolyCommitmentGens<G>,
     transcript: &mut Transcript,
-  ) -> Result<(), ProofVerifyError> {
-    transcript.append_protocol_name(SparseMatPolyEvalProof::protocol_name());
+  ) -> Result<(), ProofVerifyError>
+  where
+    G: CurveGroup<ScalarField = F>,
+  {
+    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, SparseMatPolyEvalProof::<F, G>::protocol_name());
 
     // equalize the lengths of rx and ry
-    let (rx_ext, ry_ext) = SparseMatPolyEvalProof::equalize(rx, ry);
+    let (rx_ext, ry_ext) = SparseMatPolyEvalProof::<F, G>::equalize(rx, ry);
 
     let (nz, num_mem_cells) = (comm.num_ops, comm.num_mem_cells);
     assert_eq!(rx_ext.len().pow2(), num_mem_cells);
@@ -1574,7 +1586,8 @@ impl SparseMatPolyEvalProof {
       .append_to_transcript(b"comm_poly_row_col_ops_val", transcript);
 
     // produce a random element from the transcript for hash function
-    let r_mem_check = transcript.challenge_vector(b"challenge_r_hash", 2);
+    let r_mem_check =
+    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_r_hash", 2);
 
     self.poly_eval_network_proof.verify(
       comm,
@@ -1590,24 +1603,24 @@ impl SparseMatPolyEvalProof {
   }
 }
 
-pub struct SparsePolyEntry {
+pub struct SparsePolyEntry<F: PrimeField>  {
   idx: usize,
-  val: Scalar,
+  val: F,
 }
 
-impl SparsePolyEntry {
-  pub fn new(idx: usize, val: Scalar) -> Self {
+impl<F: PrimeField>  SparsePolyEntry<F> {
+  pub fn new(idx: usize, val: F) -> Self {
     SparsePolyEntry { idx, val }
   }
 }
 
-pub struct SparsePolynomial {
+pub struct SparsePolynomial<F: PrimeField>  {
   num_vars: usize,
-  Z: Vec<SparsePolyEntry>,
+  Z: Vec<SparsePolyEntry<F>>,
 }
 
-impl SparsePolynomial {
-  pub fn new(num_vars: usize, Z: Vec<SparsePolyEntry>) -> Self {
+impl<F: PrimeField>  SparsePolynomial<F> {
+  pub fn new(num_vars: usize, Z: Vec<SparsePolyEntry<F>>) -> Self {
     SparsePolynomial { num_vars, Z }
   }
 
@@ -1637,15 +1650,18 @@ impl SparsePolynomial {
   }
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod tests {
   use super::*;
-use ark_std::{UniformRand};
-use rand::RngCore;
+  use ark_std::UniformRand;
+  use rand::RngCore;
+
+  type F = ark_bls12_377::Fr;
+  type G = ark_bls12_377::Bls12_377;
 
   #[test]
   fn check_sparse_polyeval_proof() {
-  let mut rng = ark_std::rand::thread_rng();
+    let mut rng = ark_std::rand::thread_rng();
 
     let num_nz_entries: usize = 256;
     let num_rows: usize = 256;
@@ -1653,7 +1669,7 @@ use rand::RngCore;
     let num_vars_x: usize = num_rows.log_2() as usize;
     let num_vars_y: usize = num_cols.log_2() as usize;
 
-    let mut M: Vec<SparseMatEntry> = Vec::new();
+    let mut M: Vec<SparseMatEntry<F>> = Vec::new();
 
     for _i in 0..num_nz_entries {
       M.push(SparseMatEntry::new(
@@ -1664,7 +1680,7 @@ use rand::RngCore;
     }
 
     let poly_M = SparseMatPolynomial::new(num_vars_x, num_vars_y, M);
-    let gens = SparseMatPolyCommitmentGens::new(
+    let gens = SparseMatPolyCommitmentGens::<G>::new(
       b"gens_sparse_poly",
       num_vars_x,
       num_vars_y,
