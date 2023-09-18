@@ -15,9 +15,9 @@ use crate::utils::transcript::{AppendToTranscript, ProofTranscript};
 use core::cmp::Ordering;
 use merlin::Transcript;
 use ark_serialize::*;
-use ark_ff::{One, Zero, Field};
 //use ark_ec::pairing::Pairing;
 use std::marker::PhantomData;
+use ark_grumpkin::{Projective as G, Fr as F};
 
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize, Clone)]
 pub struct SparseMatEntry<F: PrimeField> {
@@ -1650,18 +1650,18 @@ impl<F: PrimeField>  SparsePolynomial<F> {
   }
 }
 
-/*#[cfg(test)]
+#[cfg(test)]
 mod tests {
   use super::*;
   use ark_std::UniformRand;
-  use rand::RngCore;
-
-  type F = ark_bls12_377::Fr;
-  type G = ark_bls12_377::Bls12_377;
+  use ark_std::rand::Rng;
+  use ark_std::rand::RngCore;
+  //use ark_bn254::Fr as Scalar;
+  use ark_grumpkin::{Projective as G, Fr as Scalar};
 
   #[test]
   fn check_sparse_polyeval_proof() {
-    let mut rng = ark_std::rand::thread_rng();
+    let mut rng = ark_std::test_rng();
 
     let num_nz_entries: usize = 256;
     let num_rows: usize = 256;
@@ -1669,7 +1669,7 @@ mod tests {
     let num_vars_x: usize = num_rows.log_2() as usize;
     let num_vars_y: usize = num_cols.log_2() as usize;
 
-    let mut M: Vec<SparseMatEntry<F>> = Vec::new();
+    let mut M: Vec<SparseMatEntry<Scalar>> = Vec::new();
 
     for _i in 0..num_nz_entries {
       M.push(SparseMatEntry::new(
@@ -1679,8 +1679,8 @@ mod tests {
       ));
     }
 
-    let poly_M = SparseMatPolynomial::new(num_vars_x, num_vars_y, M);
-    let gens = SparseMatPolyCommitmentGens::<G>::new(
+    let poly_M = SparseMatPolynomial::<Scalar, G>::new(num_vars_x, num_vars_y, M);
+    let gens = SparseMatPolyCommitmentGens::new(
       b"gens_sparse_poly",
       num_vars_x,
       num_vars_y,
@@ -1692,12 +1692,12 @@ mod tests {
     let (poly_comm, dense) = SparseMatPolynomial::multi_commit(&[&poly_M, &poly_M, &poly_M], &gens);
 
     // evaluation
-    let rx: Vec<F> = (0..num_vars_x)
+    let rx: Vec<Scalar> = (0..num_vars_x)
       .map(|_i| Scalar::rand(&mut rng))
-      .collect::<Vec<F>>();
-    let ry: Vec<F> = (0..num_vars_y)
+      .collect::<Vec<Scalar>>();
+    let ry: Vec<Scalar> = (0..num_vars_y)
       .map(|_i| Scalar::rand(&mut rng))
-      .collect::<Vec<F>>();
+      .collect::<Vec<Scalar>>();
     let eval = SparseMatPolynomial::multi_evaluate(&[&poly_M], &rx, &ry);
     let evals = vec![eval[0], eval[0], eval[0]];
 
@@ -1725,4 +1725,4 @@ mod tests {
       )
       .is_ok());
   }
-}*/
+}
