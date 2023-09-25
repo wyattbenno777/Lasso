@@ -364,7 +364,7 @@ impl<F: PrimeField, G: CurveGroup> ProductCircuitEvalProofBatched<F, G> {
       // produce a fresh set of coeffs and a joint claim
       let coeff_vec: Vec<F> = <Transcript as ProofTranscript<G>>::challenge_vector(
         transcript,
-        b"rand_coeffs_next_layer",
+        b"",
         claims_to_verify.len(),
       );
       let claim = (0..claims_to_verify.len())

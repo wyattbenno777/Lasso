@@ -108,12 +108,12 @@ impl<F: PrimeField, G: CurveGroup> DerefsEvalProof<F, G>
       );
 
       // append the claimed evaluations to transcript
-      <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"evals_ops_val", &evals);
+      <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &evals);
 
       // n-to-1 reduction
       let (r_joint, eval_joint) = {
         let challenges =
-          <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_combine_n_to_one", evals.len().log_2() as usize);
+          <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"", evals.len().log_2() as usize);
         let mut poly_evals = DensePolynomial::new(evals);
         for i in (0..challenges.len()).rev() {
           poly_evals.bound_poly_var_bot(&challenges[i]);
@@ -127,7 +127,7 @@ impl<F: PrimeField, G: CurveGroup> DerefsEvalProof<F, G>
         (r_joint, joint_claim_eval)
       };
       // decommit the joint polynomial at r_joint
-      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"joint_claim_eval", &eval_joint);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &eval_joint);
       let (proof_derefs, _comm_derefs_eval) = PolyEvalProof::prove(
         joint_poly,
         None,
@@ -152,7 +152,7 @@ impl<F: PrimeField, G: CurveGroup> DerefsEvalProof<F, G>
       transcript: &mut Transcript,
       random_tape: &mut RandomTape<G>,
     ) -> Self {
-      <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, DerefsEvalProof::<F, G>::protocol_name());
+      //<Transcript as ProofTranscript<G>>::append_protocol_name(transcript, DerefsEvalProof::<F, G>::protocol_name());
 
       let evals = {
         let mut evals = eval_row_ops_val_vec.to_owned();
@@ -175,11 +175,11 @@ impl<F: PrimeField, G: CurveGroup> DerefsEvalProof<F, G>
       transcript: &mut Transcript,
     ) -> Result<(), ProofVerifyError> {
       // append the claimed evaluations to transcript
-      <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"evals_ops_val", &evals);
+      <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &evals);
 
       // n-to-1 reduction
       let challenges =
-        <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_combine_n_to_one", evals.len().log_2() as usize);
+        <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"", evals.len().log_2() as usize);
       let mut poly_evals = DensePolynomial::new(evals);
       for i in (0..challenges.len()).rev() {
         poly_evals.bound_poly_var_bot(&challenges[i]);
@@ -190,7 +190,7 @@ impl<F: PrimeField, G: CurveGroup> DerefsEvalProof<F, G>
       r_joint.extend(r);
 
       // decommit the joint polynomial at r_joint
-      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"joint_claim_eval", &joint_claim_eval);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &joint_claim_eval);
 
       proof.verify_plain(gens, transcript, &r_joint, &joint_claim_eval, comm)
     }
@@ -205,7 +205,7 @@ impl<F: PrimeField, G: CurveGroup> DerefsEvalProof<F, G>
       comm: &DerefsCommitment<G>,
       transcript: &mut Transcript,
     ) -> Result<(), ProofVerifyError> {
-      <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, DerefsEvalProof::<F, G>::protocol_name());
+      //<Transcript as ProofTranscript<G>>::append_protocol_name(transcript, DerefsEvalProof::<F, G>::protocol_name());
       let mut evals = eval_row_ops_val_vec.to_owned();
       evals.extend(eval_col_ops_val_vec);
       evals.resize(evals.len().next_power_of_two(), F::zero());
@@ -507,7 +507,10 @@ impl<F: PrimeField, G: CurveGroup> SparseMatPolynomial<F, G> {
   pub fn multi_commit(
     sparse_polys: &[&SparseMatPolynomial<F, G>],
     gens: &SparseMatPolyCommitmentGens<G>,
-  ) -> (SparseMatPolyCommitment<G>, MultiSparseMatPolynomialAsDense<F>)
+  ) -> (
+    SparseMatPolyCommitment<G>,
+    MultiSparseMatPolynomialAsDense<F>
+  )
   where
     G: CurveGroup<ScalarField = F>
   {
@@ -757,7 +760,7 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
   where
     G: CurveGroup<ScalarField = F>
   {
-    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, HashLayerProof::<F, G>::protocol_name());
+    //<Transcript as ProofTranscript<G>>::append_protocol_name(transcript, HashLayerProof::<F, G>::protocol_name());
 
     let (rand_mem, rand_ops) = rand;
 
@@ -797,9 +800,9 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
     evals_ops.extend(&eval_col_read_ts_vec);
     evals_ops.extend(&eval_val_vec);
     evals_ops.resize(evals_ops.len().next_power_of_two(), F::zero());
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_evals_ops", &evals_ops);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &evals_ops);
     let challenges_ops =
-    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_combine_n_to_one", evals_ops.len().log_2() as usize);
+    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"", evals_ops.len().log_2() as usize);
 
     let mut poly_evals_ops = DensePolynomial::new(evals_ops);
     for i in (0..challenges_ops.len()).rev() {
@@ -810,7 +813,7 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
     let mut r_joint_ops = challenges_ops;
     r_joint_ops.extend(rand_ops);
     debug_assert_eq!(dense.comb_ops.evaluate(&r_joint_ops), joint_claim_eval_ops);
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"joint_claim_eval_ops", &joint_claim_eval_ops);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &joint_claim_eval_ops);
     let (proof_ops, _comm_ops_eval) = PolyEvalProof::prove(
       &dense.comb_ops,
       None,
@@ -824,10 +827,10 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
 
     // form a single decommitment using comb_comb_mem at rand_mem
     let evals_mem: Vec<F> = vec![eval_row_audit_ts, eval_col_audit_ts];
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_evals_mem", &evals_mem);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &evals_mem);
   
     let challenges_mem =
-    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_combine_two_to_one", evals_mem.len().log_2() as usize);
+    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"", evals_mem.len().log_2() as usize);
 
     let mut poly_evals_mem = DensePolynomial::new(evals_mem);
     for i in (0..challenges_mem.len()).rev() {
@@ -838,7 +841,7 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
     let mut r_joint_mem = challenges_mem;
     r_joint_mem.extend(rand_mem);
     debug_assert_eq!(dense.comb_mem.evaluate(&r_joint_mem), joint_claim_eval_mem);
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"joint_claim_eval_mem", &joint_claim_eval_mem);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &joint_claim_eval_mem);
     let (proof_mem, _comm_mem_eval) = PolyEvalProof::prove(
       &dense.comb_mem,
       None,
@@ -930,7 +933,7 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
   where
     G: CurveGroup<ScalarField = F>
   {
-    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, HashLayerProof::<F, G>::protocol_name());
+   // <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, HashLayerProof::<F, G>::protocol_name());
 
     let (rand_mem, rand_ops) = rand;
 
@@ -970,9 +973,9 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
     evals_ops.extend(eval_col_read_ts_vec);
     evals_ops.extend(eval_val_vec);
     evals_ops.resize(evals_ops.len().next_power_of_two(), F::zero());
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_evals_op", &evals_ops);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &evals_ops);
     let challenges_ops =
-    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_combine_n_to_one", evals_ops.len().log_2() as usize);
+    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"", evals_ops.len().log_2() as usize);
 
 
     let mut poly_evals_ops = DensePolynomial::new(evals_ops);
@@ -983,7 +986,7 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
     let joint_claim_eval_ops = poly_evals_ops[0];
     let mut r_joint_ops = challenges_ops;
     r_joint_ops.extend(rand_ops);
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"joint_claim_eval_ops", &joint_claim_eval_ops);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &joint_claim_eval_ops);
     assert!(self
       .proof_ops
       .verify_plain(
@@ -998,9 +1001,9 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
     // verify proof-mem using comm_comb_mem at rand_mem
     // form a single decommitment using comb_comb_mem at rand_mem
     let evals_mem: Vec<F> = vec![*eval_row_audit_ts, *eval_col_audit_ts];
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_evals_mem", &evals_mem);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &evals_mem);
     let challenges_mem =
-    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_combine_two_to_one", evals_mem.len().log_2() as usize);
+    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"", evals_mem.len().log_2() as usize);
 
     let mut poly_evals_mem = DensePolynomial::new(evals_mem);
     for i in (0..challenges_mem.len()).rev() {
@@ -1010,7 +1013,7 @@ impl<F: PrimeField, G: CurveGroup> HashLayerProof<F, G> {
     let joint_claim_eval_mem = poly_evals_mem[0];
     let mut r_joint_mem = challenges_mem;
     r_joint_mem.extend(rand_mem);
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"joint_claim_eval_mem", &joint_claim_eval_mem);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &joint_claim_eval_mem);
     self.proof_mem.verify_plain(
       &gens.gens_mem,
       transcript,
@@ -1075,7 +1078,7 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
   where
     G: CurveGroup<ScalarField = F>,
   {
-    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, ProductLayerProof::<F, G>::protocol_name());
+    //<Transcript as ProofTranscript<G>>::append_protocol_name(transcript, ProductLayerProof::<F, G>::protocol_name());
 
     let row_eval_init = row_prod_layer.init.evaluate();
     let row_eval_audit = row_prod_layer.audit.evaluate();
@@ -1093,10 +1096,10 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
     let rs: F = (0..row_eval_read.len()).map(|i| row_eval_read[i]).product();
     assert_eq!(row_eval_init * ws, rs * row_eval_audit);
 
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_row_eval_init", &row_eval_init);
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_row_eval_read", &row_eval_read);
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_row_eval_write", &row_eval_write);
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_row_eval_audit", &row_eval_audit);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &row_eval_init);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &row_eval_read);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &row_eval_write);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &row_eval_audit);
 
     let col_eval_init = col_prod_layer.init.evaluate();
     let col_eval_audit = col_prod_layer.audit.evaluate();
@@ -1114,10 +1117,10 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
     let rs: F = (0..col_eval_read.len()).map(|i| col_eval_read[i]).product();
     assert_eq!(col_eval_init * ws, rs * col_eval_audit);
 
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_col_eval_init", &col_eval_init);
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_col_eval_read", &col_eval_read);
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_col_eval_write", &col_eval_write);
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_col_eval_audit", &col_eval_audit);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &col_eval_init);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &col_eval_read);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &col_eval_write);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &col_eval_audit);
 
 
     // prepare dotproduct circuit for batching then with ops-related product circuits
@@ -1141,8 +1144,8 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
       let (eval_dotp_left, eval_dotp_right) =
         (dotp_circuit_left.evaluate(), dotp_circuit_right.evaluate());
 
-      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_eval_dotp_left", &eval_dotp_left);
-      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_eval_dotp_right", &eval_dotp_right);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &eval_dotp_left);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &eval_dotp_right);
 
       assert_eq!(eval_dotp_left + eval_dotp_right, eval[i]);
       eval_dotp_left_vec.push(eval_dotp_left);
@@ -1268,7 +1271,7 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
   where
     G: CurveGroup<ScalarField = F>,
   {
-    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, ProductLayerProof::<F, G>::protocol_name());
+    //<Transcript as ProofTranscript<G>>::append_protocol_name(transcript, ProductLayerProof::<F, G>::protocol_name());
 
     let num_instances = eval.len();
 
@@ -1282,10 +1285,10 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
     let rs: F = (0..row_eval_read.len()).map(|i| row_eval_read[i]).product();
     assert_eq!( ws * row_eval_init , rs * row_eval_audit);
 
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_row_eval_init", &row_eval_init);
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_row_eval_read", &row_eval_read);
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_row_eval_write", &row_eval_write);
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_row_eval_audit", &row_eval_audit);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &row_eval_init);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &row_eval_read);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &row_eval_write);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &row_eval_audit);
 
     // subset check
     let (col_eval_init, col_eval_read, col_eval_write, col_eval_audit) = &self.eval_col;
@@ -1297,10 +1300,10 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
     let rs: F = (0..col_eval_read.len()).map(|i| col_eval_read[i]).product();
     assert_eq!(ws * col_eval_init, rs * col_eval_audit);
 
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_col_eval_init", &col_eval_init);
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_col_eval_read", &col_eval_read);
-    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"claim_col_eval_write", &col_eval_write);
-    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_col_eval_audit", &col_eval_audit);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &col_eval_init);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &col_eval_read);
+    <Transcript as ProofTranscript<G>>::append_scalars(transcript, b"", &col_eval_write);
+    <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &col_eval_audit);
 
     // verify the evaluation of the sparse polynomial
     let (eval_dotp_left, eval_dotp_right) = &self.eval_val;
@@ -1309,8 +1312,8 @@ impl<F: PrimeField, G: CurveGroup> ProductLayerProof<F, G> {
     let mut claims_dotp_circuit: Vec<F> = Vec::new();
     for i in 0..num_instances {
       assert_eq!(eval_dotp_left[i] + eval_dotp_right[i], eval[i]);
-      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_eval_dotp_left", &eval_dotp_left[i]);
-      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"claim_eval_dotp_right", &eval_dotp_right[i]);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &eval_dotp_left[i]);
+      <Transcript as ProofTranscript<G>>::append_scalar(transcript, b"", &eval_dotp_right[i]);
 
       claims_dotp_circuit.push(eval_dotp_left[i]);
       claims_dotp_circuit.push(eval_dotp_right[i]);
@@ -1369,7 +1372,7 @@ impl<F: PrimeField, G: CurveGroup>  PolyEvalNetworkProof<F, G> {
   where
     G: CurveGroup<ScalarField = F>,
   {
-    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, PolyEvalNetworkProof::<F, G>::protocol_name());
+   //<Transcript as ProofTranscript<G>>::append_protocol_name(transcript, PolyEvalNetworkProof::<F, G>::protocol_name());
 
     let (proof_prod_layer, rand_mem, rand_ops) = ProductLayerProof::prove(
       &mut network.row_layers.prod_layer,
@@ -1411,7 +1414,7 @@ impl<F: PrimeField, G: CurveGroup>  PolyEvalNetworkProof<F, G> {
   where
     G: CurveGroup<ScalarField = F>,
   {
-    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, PolyEvalNetworkProof::<F, G>::protocol_name());
+   // <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, PolyEvalNetworkProof::<F, G>::protocol_name());
 
     let num_instances = evals.len();
     let (r_hash, r_multiset_check) = r_mem_check;
@@ -1505,59 +1508,59 @@ impl<F: PrimeField, G: CurveGroup> SparseMatPolyEvalProof<F, G> {
   where
       G: CurveGroup<ScalarField = F>,
   {
-    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, SparseMatPolyEvalProof::<F, G>::protocol_name());
+      //<Transcript as ProofTranscript<G>>::append_protocol_name(transcript, SparseMatPolyEvalProof::<F, G>::protocol_name());
 
-    // ensure there is one eval for each polynomial in dense
-    assert_eq!(evals.len(), dense.batch_size);
+      // ensure there is one eval for each polynomial in dense
+      assert_eq!(evals.len(), dense.batch_size);
 
-    let (mem_rx, mem_ry) = {
-      // equalize the lengths of rx and ry
-      let (rx_ext, ry_ext) = SparseMatPolyEvalProof::<F, G>::equalize(rx, ry);
-      let poly_rx = EqPolynomial::new(rx_ext).evals();
-      let poly_ry = EqPolynomial::new(ry_ext).evals();
-      (poly_rx, poly_ry)
+      let (mem_rx, mem_ry) = {
+        // equalize the lengths of rx and ry
+        let (rx_ext, ry_ext) = SparseMatPolyEvalProof::<F, G>::equalize(rx, ry);
+        let poly_rx = EqPolynomial::new(rx_ext).evals();
+        let poly_ry = EqPolynomial::new(ry_ext).evals();
+        (poly_rx, poly_ry)
+      };
+
+      let derefs = dense.deref(&mem_rx, &mem_ry);
+
+      // commit to non-deterministic choices of the prover
+      let comm_derefs = {
+        let comm = derefs.commit(&gens.gens_derefs);
+        comm.append_to_transcript(b"comm_poly_row_col_ops_val", transcript);
+        comm
+      };
+
+      let poly_eval_network_proof = {
+        // produce a random element from the transcript for hash function
+        let r_mem_check =
+        <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"", 2);
+
+        // build a network to evaluate the sparse polynomial
+        let mut net = PolyEvalNetwork::new(
+          dense,
+          &derefs,
+          &mem_rx,
+          &mem_ry,
+          &(r_mem_check[0], r_mem_check[1]),
+        );
+
+        let poly_eval_network_proof = PolyEvalNetworkProof::prove(
+          &mut net,
+          dense,
+          &derefs,
+          evals,
+          gens,
+          transcript,
+          random_tape,
+        );
+
+        poly_eval_network_proof
     };
 
-    let derefs = dense.deref(&mem_rx, &mem_ry);
-
-    // commit to non-deterministic choices of the prover
-    let comm_derefs = {
-      let comm = derefs.commit(&gens.gens_derefs);
-      comm.append_to_transcript(b"comm_poly_row_col_ops_val", transcript);
-      comm
-    };
-
-    let poly_eval_network_proof = {
-      // produce a random element from the transcript for hash function
-    let r_mem_check =
-    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_r_hash", 2);
-
-    // build a network to evaluate the sparse polynomial
-    let mut net = PolyEvalNetwork::new(
-      dense,
-      &derefs,
-      &mem_rx,
-      &mem_ry,
-      &(r_mem_check[0], r_mem_check[1]),
-    );
-
-    let poly_eval_network_proof = PolyEvalNetworkProof::prove(
-      &mut net,
-      dense,
-      &derefs,
-      evals,
-      gens,
-      transcript,
-      random_tape,
-    );
-
-    poly_eval_network_proof
-  };
-
-  SparseMatPolyEvalProof {
-    comm_derefs,
-    poly_eval_network_proof,
-  }
+    SparseMatPolyEvalProof {
+      comm_derefs,
+      poly_eval_network_proof,
+    }
   }
 
   pub fn verify(
@@ -1572,10 +1575,11 @@ impl<F: PrimeField, G: CurveGroup> SparseMatPolyEvalProof<F, G> {
   where
     G: CurveGroup<ScalarField = F>,
   {
-    <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, SparseMatPolyEvalProof::<F, G>::protocol_name());
+    //<Transcript as ProofTranscript<G>>::append_protocol_name(transcript, SparseMatPolyEvalProof::<F, G>::protocol_name());
 
     // equalize the lengths of rx and ry
     let (rx_ext, ry_ext) = SparseMatPolyEvalProof::<F, G>::equalize(rx, ry);
+    //println!("this is evals verifer {:?}", evals);
 
     let (nz, num_mem_cells) = (comm.num_ops, comm.num_mem_cells);
     assert_eq!(rx_ext.len().pow2(), num_mem_cells);
@@ -1584,10 +1588,11 @@ impl<F: PrimeField, G: CurveGroup> SparseMatPolyEvalProof<F, G> {
     self
       .comm_derefs
       .append_to_transcript(b"comm_poly_row_col_ops_val", transcript);
+      //println!("zzzzafafafaaf");
 
     // produce a random element from the transcript for hash function
     let r_mem_check =
-    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"challenge_r_hash", 2);
+    <Transcript as ProofTranscript<G>>::challenge_vector(transcript, b"", 2);
 
     self.poly_eval_network_proof.verify(
       comm,
@@ -1654,14 +1659,15 @@ impl<F: PrimeField>  SparsePolynomial<F> {
 mod tests {
   use super::*;
   use ark_std::UniformRand;
-  use ark_std::rand::Rng;
   use ark_std::rand::RngCore;
+  //use rand::SeedableRng;
   //use ark_bn254::Fr as Scalar;
   use ark_grumpkin::{Projective as G, Fr as Scalar};
 
   #[test]
   fn check_sparse_polyeval_proof() {
-    let mut rng = ark_std::test_rng();
+    let mut rng = ark_std::rand::thread_rng();
+    //let mut rng = rand::rngs::StdRng::seed_from_u64(1);
 
     let num_nz_entries: usize = 256;
     let num_rows: usize = 256;
@@ -1673,14 +1679,14 @@ mod tests {
 
     for _i in 0..num_nz_entries {
       M.push(SparseMatEntry::new(
-        (rng.next_u64()% (num_rows as u64)) as usize,
+        (rng.next_u64() % (num_rows as u64)) as usize,
         (rng.next_u64() % (num_cols as u64)) as usize,
         Scalar::rand(&mut rng),
       ));
     }
 
     let poly_M = SparseMatPolynomial::<Scalar, G>::new(num_vars_x, num_vars_y, M);
-    let gens = SparseMatPolyCommitmentGens::new(
+    let gens = SparseMatPolyCommitmentGens::<G>::new(
       b"gens_sparse_poly",
       num_vars_x,
       num_vars_y,
