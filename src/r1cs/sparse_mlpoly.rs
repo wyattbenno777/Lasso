@@ -17,7 +17,7 @@ use merlin::Transcript;
 use ark_serialize::*;
 //use ark_ec::pairing::Pairing;
 use std::marker::PhantomData;
-use ark_grumpkin::{Projective as G, Fr as F};
+//use ark_grumpkin::{Projective as G, Fr as F};
 
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize, Clone)]
 pub struct SparseMatEntry<F: PrimeField> {
