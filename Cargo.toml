@@ -40,10 +40,17 @@ ark-std = { version = "0.4.0" }
 ark-serialize = { version = "0.4.2", default-features = false, features = [
     "derive",
 ] }
-ark-crypto-primitives = {version = "0.4.0", features = ["sponge"] }
+ark-crypto-primitives = {version = "0.4.0", features = ["sponge","snark"] }
 
 ark-bn254 = { version = "^0.4.0", default-features = false, features = [ "curve" ] }
 ark-grumpkin = { version = "^0.4.0", default-features = false }
+ark-poly-commit = { version = "0.3.0" }
+ark-r1cs-std = { version = "0.3.0", default-features = false }
+ark-relations = { version = "0.4.0", default-features = false }
+
+bellpepper-core = { version="0.2.0", default-features = false }
+bellpepper = { version="0.2.0", default-features = false }
+ff = { version = "0.13.0", features = ["derive"] }
 
 # ark-bls12-381 = { version = "^0.4.0", default-features = false, features = [ "curve" ] }
 criterion = { version = "0.3.1", features = ["html_reports"] }
@@ -76,7 +83,7 @@ default = [
 ]
 multicore = ["rayon"]
 ark-msm = [] # run with arkworks MSM without small field element optimization
-std = ["ark-ff/std", "ark-ec/std", "ark-std/std", "ark-serialize/std"]
+std = ["ark-ff/std", "ark-ec/std", "ark-std/std", "ark-relations/std", "ark-serialize/std"]
 
 [profile.release]
 debug = true
@@ -90,3 +97,4 @@ ark-poly = { git = "https://github.com/arkworks-rs/algebra/" }
 ark-serialize = { git = "https://github.com/arkworks-rs/algebra/" }
 ark-grumpkin = { path = "./curves/grumpkin" }
 ark-bn254 = { path = "./curves/bn254" }
+ark-poly-commit = {git = "https://github.com/cryptonetlab/ark-polycommit", branch="feat/variable-crs"}

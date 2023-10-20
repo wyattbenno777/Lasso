@@ -2,3 +2,4 @@
 pub mod r1csinstance;
 pub mod product_tree;
 pub mod sparse_mlpoly;
+pub mod constraints;
