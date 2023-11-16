@@ -40,6 +40,11 @@ ark-serialize = { version = "0.4.2", default-features = false, features = [
     "derive",
 ] }
 
+ark-poly-commit = { version = "0.4.0" }
+ark-r1cs-std = { version = "0.4.0", default-features = false }
+ark-crypto-primitives = {version = "0.4.0", features = ["sponge","r1cs","snark"] }
+ark-relations = { version = "0.4.0", default-features = false }
+
 # ark-bls12-381 = { version = "^0.4.0", default-features = false, features = [ "curve" ] }
 criterion = { version = "0.3.1", features = ["html_reports"] }
 num-integer = "0.1.45"
@@ -66,6 +71,7 @@ default = [
     "ark-ff/asm",
     "multicore",
 ]
+std = ["ark-relations/std"]
 multicore = ["rayon"]
 ark-msm = [] # run with arkworks MSM without small field element optimization
 
