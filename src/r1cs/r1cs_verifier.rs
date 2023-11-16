@@ -1,3 +1,4 @@
+//! This module is an adaptation of code from Testudo and Lasso main branch.
 use ark_ec::pairing::Pairing;
 use std::borrow::Borrow;
 
@@ -23,6 +24,9 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace,
 
 use ark_serialize::*;
 use ark_ec::CurveGroup;
+use ark_r1cs_std::R1CSVar;
+use ark_std::One;
+use ark_ff::Field;
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -119,6 +123,24 @@ impl<F: PrimeField> UniPolyVar<F> {
       }
       eval
     }
+}
+
+impl<G: CurveGroup> AppendToTranscript<G> for UniPolyVar<G::ScalarField> {
+
+    fn append_to_transcript<T: ProofTranscript<G>>(&self, label: &'static [u8], transcript: &mut T) {
+      
+      transcript.append_message(label, b"UniPolyVar_begin");
+      
+      for i in 0..self.coeffs.len() {
+      
+        let value = self.coeffs[i].value().unwrap();  
+        transcript.append_scalar(b"coeff", &value);
+        
+      }
+      
+      transcript.append_message(label, b"UniPolyVar_end");
+    }
+  
   }
 
 
@@ -155,7 +177,7 @@ impl<F: PrimeField> SumcheckInstanceProof<F> {
     for i in 0..self.compressed_polys.len() {
         let poly = self.compressed_polys[i].decompress(&e);
 
-        let mut fpv_poly = UniPolyVar::<>::new_variable(cs.clone(), || Ok(poly.clone()), AllocationMode::Witness)?;
+        let mut fpv_poly = UniPolyVar::<F>::new_variable(cs.clone(), || Ok(poly.clone()), AllocationMode::Witness)?;
 
         // verify degree bound
         assert_eq!(poly.degree(), degree_bound);
@@ -168,7 +190,7 @@ impl<F: PrimeField> SumcheckInstanceProof<F> {
         res.enforce_equal(&d_e)?;
 
         // append the prover's message to the transcript
-        <UniPoly<F> as AppendToTranscript<G>>::append_to_transcript(&poly, b"poly", transcript);
+        <UniPolyVar<F> as AppendToTranscript<G>>::append_to_transcript(&fpv_poly, b"fpv_poly", transcript);
 
         //derive the verifier's challenge for the next round
         let r_i = transcript.challenge_scalar(b"challenge_nextround");
@@ -184,12 +206,93 @@ impl<F: PrimeField> SumcheckInstanceProof<F> {
 
 }
 
-/*/// Circuit gadget that implements the sumcheck verifier
+// Used for dot product proof in PCS.
+#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
+pub struct BulletReductionProof<G: CurveGroup> {
+  L_vec: Vec<G>,
+  R_vec: Vec<G>,
+}
+
+impl<G: CurveGroup> BulletReductionProof<G> {
+
+    // Challenges are witness variables
+    // Points are input variables
+    // Squaring is enforced as a constraint
+
+    pub fn verification_scalars<T: ProofTranscript<G>>(
+        &self,
+        cs: ConstraintSystemRef<G::ScalarField>,
+        n: usize,
+        transcript: &mut T,
+      ) -> Result<
+        (
+        Vec<G::ScalarField>,
+        Vec<G::ScalarField>,
+        Vec<G::ScalarField>,
+        ), SynthesisError>
+    {
+        let lg_n = self.L_vec.len();
+        // 4 billion multiplications should be enough for anyone
+        // and this check prevents overflow in 1<<lg_n below.
+        assert!(lg_n >= 32, "lg_n must be at least 32, got {lg_n}");
+        assert_eq!((1 << lg_n), n);
+
+
+        // 1. Recompute x_k,...,x_1 based on the proof transcript
+        let mut challenges = Vec::with_capacity(lg_n);
+        let mut _challenges_witness = Vec::with_capacity(lg_n);
+        for (L, R) in self.L_vec.iter().zip(self.R_vec.iter()) {
+            transcript.append_point( b"L", L);
+            transcript.append_point( b"R", R);
+            let c = transcript.challenge_scalar(b"u");
+
+            let c_wit = FpVar::new_witness(cs.clone(), || Ok(c))?;
+            let L_scalar = (*L).into();
+            //let _lv = FpVar::new_input(cs.clone(), || Ok(L_scalar))?;
+            //let _rv = FpVar::new_input(cs.clone(), || Ok(*R))?;
+            _challenges_witness.push(c_wit);
+            challenges.push(c);
+        }
+
+        // 2. Compute 1/(u_k...u_1) and 1/u_k, ..., 1/u_1
+        // let mut challenges_inv = challenges.clone();
+        let mut challenges_inv = challenges
+        .iter()
+        .map(|x| x.inverse().unwrap())
+        .collect::<Vec<_>>();
+        let mut all_inv = G::ScalarField::one();
+        challenges_inv.iter().for_each(|c| all_inv *= *c);
+
+        // 3. Compute u_i^2 and (1/u_i)^2
+        for i in 0..lg_n {
+            challenges[i] = challenges[i].square();
+            challenges_inv[i] = challenges_inv[i].square();
+        }
+        let challenges_sq = challenges;
+        let challenges_inv_sq = challenges_inv;
+
+        // 4. Compute s values inductively.
+        let mut s = vec![all_inv];
+        for i in 1..n {
+            let lg_i = (32 - 1 - (i as u32).leading_zeros()) as usize;
+            let k = 1 << lg_i;
+            // The challenges are stored in "creation order" as [u_k,...,u_1],
+            // so u_{lg(i)+1} = is indexed by (lg_n-1) - lg_i
+            let u_lg_i_sq = challenges_sq[(lg_n - 1) - lg_i];
+            s.push(s[i - k] * u_lg_i_sq);
+        }
+
+        Ok((challenges_sq, challenges_inv_sq, s))
+    }
+
+}
+
+/// Circuit gadget that implements the sumcheck verifier
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 struct PrimarySumcheck<G: CurveGroup, const ALPHA: usize> {
   proof: SumcheckInstanceProof<G::ScalarField>,
   claimed_evaluation: G::ScalarField,
   eval_derefs: [G::ScalarField; ALPHA],
   //proof_derefs: CombinedTableEvalProof<G, ALPHA>,
-}*/
+}
 
