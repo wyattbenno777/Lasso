@@ -8,7 +8,8 @@ use crate::{
   utils::transcript::{AppendToTranscript, ProofTranscript},
   utils::errors::ProofVerifyError,
 };
-use ark_ff::PrimeField;
+use ark_ff::{prelude::*, PrimeField};
+use ark_ff::BigInt;
 
 use ark_crypto_primitives::sponge::{
   constraints::CryptographicSpongeVar,
@@ -27,6 +28,9 @@ use ark_ec::CurveGroup;
 use ark_r1cs_std::R1CSVar;
 use ark_std::One;
 use ark_ff::Field;
+
+#[cfg(not(feature = "ark-msm"))]
+use super::super::msm::VariableBaseMSM;
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -218,8 +222,8 @@ impl<G: CurveGroup> BulletReductionProof<G> {
     pub fn verification_scalars<T: ProofTranscript<G>>(
         &self,
         cs: ConstraintSystemRef<G::ScalarField>,
-        n: usize,
         transcript: &mut T,
+        n: usize,
       ) -> Result<
         (
         Vec<G::ScalarField>,
@@ -315,7 +319,226 @@ impl<G: CurveGroup> BulletReductionProof<G> {
         Ok((challenges_sq_fin, challenges_inv_sq_fin, s_fin))
     }
 
+  /// This method is for testing that proof generation work,
+  /// but for efficiency the actual protocols would use `verification_scalars`
+  /// method to combine inner product verification with other checks
+  /// in a single multiscalar multiplication.
+  pub fn verify<T: ProofTranscript<G>>(
+    &self,
+    cs: ConstraintSystemRef<G::ScalarField>,
+    transcript: &mut T,
+    n: usize,
+    a: &[G::ScalarField],
+    Gamma: &G,
+    G: &[G],
+  ) -> Result<(G, G, G::ScalarField), SynthesisError> {
+    let (u_sq, u_inv_sq, s) = self.verification_scalars(cs.clone(), transcript, n)?;
+
+    let group_element = G::normalize_batch(G);
+
+    let G_hat = VariableBaseMSM::msm(group_element.as_ref(), s.as_ref()).unwrap();
+
+    let a_hat = inner_product(a, &s);
+    let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;
+    enforce_inner_product(cs, a, &s, &a_hat_witness);
+
+    let bases = G::normalize_batch(
+      [self.L_vec.as_slice(), self.R_vec.as_slice(), &[*Gamma]]
+        .concat()
+        .as_ref(),
+    );
+    let scalars = u_sq
+      .into_iter()
+      .chain(u_inv_sq.into_iter())
+      .chain([G::ScalarField::one()])
+      .collect::<Vec<_>>();
+
+    let Gamma_hat = VariableBaseMSM::msm(bases.as_ref(), scalars.as_ref()).unwrap();
+
+    Ok((G_hat, Gamma_hat, a_hat))
+  }
+
 }
+
+pub fn inner_product<F: PrimeField>(a: &[F], b: &[F]) -> F {
+  assert!(
+    a.len() == b.len(),
+    "inner_product(a,b): lengths of vectors do not match"
+  );
+  let mut out = F::zero();
+  for i in 0..a.len() {
+    out += a[i] * b[i];
+  }
+  out
+}
+
+fn enforce_inner_product<F: PrimeField>(
+  cs: ConstraintSystemRef<F>, 
+  a: &[F], 
+  b: &[F],
+  result: &FpVar<F>
+) -> Result<(), SynthesisError> {
+
+  assert_eq!(a.len(), b.len(), "Vectors must have equal length");
+
+  let mut acc = FpVar::new_witness(cs.clone(), || Ok(F::zero()))?;
+  for i in 0..a.len() {
+      let a_var = FpVar::new_input(cs.clone(), || Ok(a[i]))?;
+      let b_var = FpVar::new_input(cs.clone(), || Ok(b[i]))?;
+
+      let mul = a_var * b_var;
+      acc += mul; 
+  }
+
+  result.enforce_equal(&acc)?;
+
+  Ok(())
+}
+
+fn enforce_variable_msm<G: CurveGroup>(
+  cs: ConstraintSystemRef<G::ScalarField>,
+
+  bases: &[FpVar<G::ScalarField>],  
+  scalars: &[FpVar<G::ScalarField>],
+
+  result: &FpVar<G::ScalarField>
+) -> Result<(), SynthesisError> {
+
+  let bigints = ark_std::cfg_into_iter!(scalars)
+  .map(|s| s.value().unwrap().into_bigint())
+  .collect::<Vec<_>>();
+
+  let size = ark_std::cmp::min(bases.len(), bigints.len());
+  //let scalars = &bigints[..size];
+  //let bases = &bases[..size];
+  let one = FpVar::<G::ScalarField>::new_input(cs.clone(), || Ok(G::ScalarField::one()))?;
+  let zero = FpVar::<G::ScalarField>::new_input(cs.clone(), || Ok(G::ScalarField::zero()))?;
+  let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| (s.value().unwrap() != zero.value().unwrap()));
+
+  let c = if size < 32 {
+    3
+  } else {
+    ln_without_floats(size) + 2
+  };
+
+  let mut max_num_bits = 1usize;
+  for bigint in &bigints {
+    if bigint.num_bits() as usize > max_num_bits {
+      max_num_bits = bigint.num_bits() as usize;
+    }
+
+    // Hack for early exit
+    if max_num_bits > 60 {
+      max_num_bits = G::ScalarField::MODULUS_BIT_SIZE as usize;
+      break;
+    }
+  }
+    
+  let num_bits = max_num_bits;
+
+  let window_starts = (0..num_bits).step_by(c);
+
+  /*let window_sums: Vec<_> = window_starts
+    .map(|w_start| {
+      let mut res = zero;
+      let mut buckets = vec![zero; (1 << c) - 1];
+      scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
+        if scalar == one {
+          if w_start == 0 {
+            res += base;
+          }
+        } else {
+          let mut scalar = scalar;
+
+          scalar.divn(w_start as u32);
+
+          let scalar = scalar.as_ref()[0] % (1 << c);
+
+          if scalar != 0 {
+            buckets[(scalar - 1) as usize] += base;
+          }
+        }
+      });
+
+      let mut running_sum = V::zero();
+      buckets.into_iter().rev().for_each(|b| {
+        running_sum += &b;
+        res += &running_sum;
+      });
+      res
+    })
+    .collect();*/
+
+  /*// Combine window sums with constraints
+  let lowest = window_sums[0].clone();
+  let mut result_var = lowest;
+  let mut cur = zero;
+
+  for i in 1..window_sums.len() {
+    cur = window_sums[i].clone();
+    for _ in 0..c {
+      let doubled = cur.double()? as FpVar<G::ScalarField>;  
+      doubled.enforce_equal(&cur)?;
+      cur = doubled;
+    }
+
+    let new_result = result_var.clone() + cur;
+    new_result.enforce_equal(&result_var)?;
+    result_var = new_result;
+  }
+
+  // Enforce final result
+  result.enforce_equal(&result_var)?;*/
+
+  Ok(());
+}
+
+fn make_digits(a: &impl BigInteger, w: usize, num_bits: usize) -> Vec<i64> {
+  let scalar = a.as_ref();
+  let radix: u64 = 1 << w;
+  let window_mask: u64 = radix - 1;
+
+  let mut carry = 0u64;
+  let num_bits = if num_bits == 0 {
+    a.num_bits() as usize
+  } else {
+    num_bits
+  };
+  let digits_count = (num_bits + w - 1) / w;
+  let mut digits = vec![0i64; digits_count];
+  for (i, digit) in digits.iter_mut().enumerate() {
+    // Construct a buffer of bits of the scalar, starting at `bit_offset`.
+    let bit_offset = i * w;
+    let u64_idx = bit_offset / 64;
+    let bit_idx = bit_offset % 64;
+    // Read the bits from the scalar
+    let bit_buf = if bit_idx < 64 - w || u64_idx == scalar.len() - 1 {
+      // This window's bits are contained in a single u64,
+      // or it's the last u64 anyway.
+      scalar[u64_idx] >> bit_idx
+    } else {
+      // Combine the current u64's bits with the bits from the next u64
+      (scalar[u64_idx] >> bit_idx) | (scalar[1 + u64_idx] << (64 - bit_idx))
+    };
+
+    // Read the actual coefficient value from the window
+    let coef = carry + (bit_buf & window_mask); // coef = [0, 2^r)
+
+    // Recenter coefficients from [0,2^w) to [-2^w/2, 2^w/2)
+    carry = (coef + radix / 2) >> w;
+    *digit = (coef as i64) - (carry << w) as i64;
+  }
+
+  digits[digits_count - 1] += (carry << w) as i64;
+
+  digits
+}
+
+fn ln_without_floats(a: usize) -> usize {
+  // log2(a) * ln(2)
+  (ark_std::log2(a) * 69 / 100) as usize
+}
+
 
 /// Circuit gadget that implements the sumcheck verifier
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
