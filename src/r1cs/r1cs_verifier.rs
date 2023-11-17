@@ -337,6 +337,8 @@ impl<G: CurveGroup> BulletReductionProof<G> {
     let group_element = G::normalize_batch(G);
 
     let G_hat = VariableBaseMSM::msm(group_element.as_ref(), s.as_ref()).unwrap();
+    //let G_hat_witness = FpVar::new_witness(cs.clone(), || Ok(G::ScalarField::from(G_hat)))?;
+    //enforce_variable_msm()
 
     let a_hat = inner_product(a, &s);
     let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;
@@ -411,8 +413,8 @@ fn enforce_variable_msm<G: CurveGroup>(
   let size = ark_std::cmp::min(bases.len(), bigints.len());
   //let scalars = &bigints[..size];
   //let bases = &bases[..size];
-  let one = FpVar::<G::ScalarField>::new_input(cs.clone(), || Ok(G::ScalarField::one()))?;
-  let zero = FpVar::<G::ScalarField>::new_input(cs.clone(), || Ok(G::ScalarField::zero()))?;
+  let one = FpVar::<G::ScalarField>::new_witness(cs.clone(), || Ok(G::ScalarField::one()))?;
+  let zero = FpVar::<G::ScalarField>::new_witness(cs.clone(), || Ok(G::ScalarField::zero()))?;
   let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| (s.value().unwrap() != zero.value().unwrap()));
 
   let c = if size < 32 {
@@ -438,38 +440,61 @@ fn enforce_variable_msm<G: CurveGroup>(
 
   let window_starts = (0..num_bits).step_by(c);
 
-  /*let window_sums: Vec<_> = window_starts
-    .map(|w_start| {
-      let mut res = zero;
-      let mut buckets = vec![zero; (1 << c) - 1];
-      scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
-        if scalar == one {
-          if w_start == 0 {
-            res += base;
-          }
-        } else {
-          let mut scalar = scalar;
-
-          scalar.divn(w_start as u32);
-
-          let scalar = scalar.as_ref()[0] % (1 << c);
-
-          if scalar != 0 {
-            buckets[(scalar - 1) as usize] += base;
-          }
+  let mut window_sums = Vec::new();
+  for w_start in window_starts {
+  
+    let mut buckets = vec![zero.clone(); (1 << c) - 1];
+    let mut res = zero.clone();
+  
+    for (&ref scalar, base) in scalars_and_bases_iter.clone() {
+      if scalar.value().unwrap() == one.value().unwrap() {
+        scalar.enforce_equal(&one)?;
+        if w_start == 0 {
+          res += base;  
         }
-      });
+      } else {
+        scalar.enforce_not_equal(&one)?;
+        let mut scalar = scalar.value().unwrap().into_bigint();
 
-      let mut running_sum = V::zero();
-      buckets.into_iter().rev().for_each(|b| {
-        running_sum += &b;
-        res += &running_sum;
-      });
-      res
-    })
-    .collect();*/
+        scalar.divn(w_start as u32);
 
-  /*// Combine window sums with constraints
+        // Enforce the constraint: scalar * w_start_inv = 1
+        let scalar_value = scalar.clone();
+        let scalar_witness = FpVar::new_witness(cs.clone(), || Ok(G::ScalarField::from(scalar_value)))?;
+
+        let w_start_inv = FpVar::new_witness(cs.clone(), || {
+            Ok(G::ScalarField::from(w_start as u64).inverse().unwrap())
+        })?;
+
+        scalar_witness.enforce_equal(&(scalar_witness.clone() * &w_start_inv))?;
+
+        let scalar = scalar.as_ref()[0] % (1 << c);
+        let scalar_w = 
+        FpVar::new_witness(cs.clone(), || Ok(G::ScalarField::from(scalar)))?;
+
+        if scalar != 0 {
+          scalar_w.enforce_not_equal(&zero)?;
+
+          let bucket_index = (scalar - 1) as usize;
+          buckets[bucket_index].enforce_equal(&(buckets[bucket_index].clone() + base));
+
+          buckets[(scalar - 1) as usize] += base;
+        }
+      }
+    }
+  
+    let mut running_sum = zero.clone();
+    for b in buckets.into_iter().rev() {
+      running_sum += &b;
+      running_sum.enforce_equal(&(running_sum.clone() + &b))?;
+      res += &running_sum;
+    }
+    res.enforce_equal(&running_sum)?;
+  
+    window_sums.push(res);
+  }
+
+  // Combine window sums with constraints
   let lowest = window_sums[0].clone();
   let mut result_var = lowest;
   let mut cur = zero;
@@ -488,9 +513,9 @@ fn enforce_variable_msm<G: CurveGroup>(
   }
 
   // Enforce final result
-  result.enforce_equal(&result_var)?;*/
+  result.enforce_equal(&result_var)?;
 
-  Ok(());
+  Ok(())
 }
 
 fn make_digits(a: &impl BigInteger, w: usize, num_bits: usize) -> Vec<i64> {
