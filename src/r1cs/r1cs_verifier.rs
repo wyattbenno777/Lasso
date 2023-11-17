@@ -215,10 +215,6 @@ pub struct BulletReductionProof<G: CurveGroup> {
 
 impl<G: CurveGroup> BulletReductionProof<G> {
 
-    // Challenges are witness variables
-    // Points are input variables
-    // Squaring is enforced as a constraint
-
     pub fn verification_scalars<T: ProofTranscript<G>>(
         &self,
         cs: ConstraintSystemRef<G::ScalarField>,
@@ -239,37 +235,50 @@ impl<G: CurveGroup> BulletReductionProof<G> {
 
 
         // 1. Recompute x_k,...,x_1 based on the proof transcript
-        let mut challenges = Vec::with_capacity(lg_n);
-        let mut _challenges_witness = Vec::with_capacity(lg_n);
+        let mut challenges_witness = Vec::with_capacity(lg_n);
         for (L, R) in self.L_vec.iter().zip(self.R_vec.iter()) {
             transcript.append_point( b"L", L);
             transcript.append_point( b"R", R);
             let c = transcript.challenge_scalar(b"u");
 
             let c_wit = FpVar::new_witness(cs.clone(), || Ok(c))?;
-            let L_scalar = (*L).into();
-            //let _lv = FpVar::new_input(cs.clone(), || Ok(L_scalar))?;
-            //let _rv = FpVar::new_input(cs.clone(), || Ok(*R))?;
-            _challenges_witness.push(c_wit);
-            challenges.push(c);
+            challenges_witness.push(c_wit);
         }
 
         // 2. Compute 1/(u_k...u_1) and 1/u_k, ..., 1/u_1
-        // let mut challenges_inv = challenges.clone();
-        let mut challenges_inv = challenges
+        let mut challenges_inv = challenges_witness
         .iter()
         .map(|x| x.inverse().unwrap())
         .collect::<Vec<_>>();
-        let mut all_inv = G::ScalarField::one();
-        challenges_inv.iter().for_each(|c| all_inv *= *c);
+        let mut all_inv = FpVar::<G::ScalarField>::new_witness(cs.clone(), || Ok(G::ScalarField::one()))?;
+        for c in challenges_inv.iter() {
+          let new_all_inv = &all_inv * c;
+          new_all_inv.enforce_equal(&all_inv)?;
+          all_inv = new_all_inv;  
+        }
 
         // 3. Compute u_i^2 and (1/u_i)^2
         for i in 0..lg_n {
-            challenges[i] = challenges[i].square();
-            challenges_inv[i] = challenges_inv[i].square();
+
+            let square_result = challenges_witness[i].square();
+            let square_result_inv = challenges_inv[i].square();
+
+            if let Ok(square) = square_result {
+              challenges_witness[i] = square; 
+            } else {
+              assert!(false, "issue with square");
+            }
+
+            if let Ok(square) = square_result_inv {
+              challenges_inv[i] = square; 
+            } else {
+              assert!(false, "issue with square");
+            }
+
         }
-        let challenges_sq = challenges;
-        let challenges_inv_sq = challenges_inv;
+        
+        let challenges_sq = challenges_witness.clone();
+        let challenges_inv_sq = challenges_inv.clone();
 
         // 4. Compute s values inductively.
         let mut s = vec![all_inv];
@@ -278,11 +287,32 @@ impl<G: CurveGroup> BulletReductionProof<G> {
             let k = 1 << lg_i;
             // The challenges are stored in "creation order" as [u_k,...,u_1],
             // so u_{lg(i)+1} = is indexed by (lg_n-1) - lg_i
-            let u_lg_i_sq = challenges_sq[(lg_n - 1) - lg_i];
-            s.push(s[i - k] * u_lg_i_sq);
+            let u_lg_i_sq = &challenges_sq[(lg_n - 1) - lg_i];
+            let s_i_k = s[i-k].clone();
+            let result = s_i_k * u_lg_i_sq;
+            s.push(result.clone());
+            
+            let _s_wit = FpVar::new_witness(cs.clone(), || {              
+              Ok(result.value().unwrap())
+            })?;
         }
 
-        Ok((challenges_sq, challenges_inv_sq, s))
+        let challenges_sq_fin: Vec<G::ScalarField> = challenges_witness
+            .iter()
+            .map(|v| v.value().unwrap()) 
+            .collect();
+
+        let challenges_inv_sq_fin: Vec<G::ScalarField> = challenges_inv
+            .iter()
+            .map(|v| v.value().unwrap())
+            .collect();
+
+        let s_fin: Vec<G::ScalarField> = s
+            .iter()
+            .map(|v| v.value().unwrap())
+            .collect();
+
+        Ok((challenges_sq_fin, challenges_inv_sq_fin, s_fin))
     }
 
 }
