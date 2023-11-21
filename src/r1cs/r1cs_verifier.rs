@@ -28,6 +28,7 @@ use ark_ec::CurveGroup;
 use ark_r1cs_std::R1CSVar;
 use ark_std::One;
 use ark_ff::Field;
+use ark_ec::AffineRepr;
 
 #[cfg(not(feature = "ark-msm"))]
 use super::super::msm::VariableBaseMSM;
@@ -336,8 +337,9 @@ impl<G: CurveGroup> BulletReductionProof<G> {
 
     let group_element = G::normalize_batch(G);
 
-    let G_hat = VariableBaseMSM::msm(group_element.as_ref(), s.as_ref()).unwrap();
-    //let G_hat_witness = FpVar::new_witness(cs.clone(), || Ok(G::ScalarField::from(G_hat)))?;
+    let G_hat: G = VariableBaseMSM::msm(group_element.as_ref(), s.as_ref()).unwrap();
+    let G_hat_affine = G_hat.into_affine();
+    let x = G_hat_affine.x().unwrap();
     //enforce_variable_msm()
 
     let a_hat = inner_product(a, &s);
