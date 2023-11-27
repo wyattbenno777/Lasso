@@ -340,7 +340,8 @@ impl<G: CurveGroup> BulletReductionProof<G> {
     let G_hat: G = VariableBaseMSM::msm(group_element.as_ref(), s.as_ref()).unwrap();
     let G_hat_affine = G_hat.into_affine();
     let x = G_hat_affine.x().unwrap();
-    //enforce_variable_msm()
+
+    let _enforce_hat: G = VariableBaseMSM::msm_circuit(group_element.as_ref(), s.as_ref(), cs.clone()).unwrap();
 
     let a_hat = inner_product(a, &s);
     let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;
@@ -395,127 +396,6 @@ fn enforce_inner_product<F: PrimeField>(
   }
 
   result.enforce_equal(&acc)?;
-
-  Ok(())
-}
-
-fn enforce_variable_msm<G: CurveGroup>(
-  cs: ConstraintSystemRef<G::ScalarField>,
-
-  bases: &[FpVar<G::ScalarField>],  
-  scalars: &[FpVar<G::ScalarField>],
-
-  result: &FpVar<G::ScalarField>
-) -> Result<(), SynthesisError> {
-
-  let bigints = ark_std::cfg_into_iter!(scalars)
-  .map(|s| s.value().unwrap().into_bigint())
-  .collect::<Vec<_>>();
-
-  let size = ark_std::cmp::min(bases.len(), bigints.len());
-  //let scalars = &bigints[..size];
-  //let bases = &bases[..size];
-  let one = FpVar::<G::ScalarField>::new_witness(cs.clone(), || Ok(G::ScalarField::one()))?;
-  let zero = FpVar::<G::ScalarField>::new_witness(cs.clone(), || Ok(G::ScalarField::zero()))?;
-  let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| (s.value().unwrap() != zero.value().unwrap()));
-
-  let c = if size < 32 {
-    3
-  } else {
-    ln_without_floats(size) + 2
-  };
-
-  let mut max_num_bits = 1usize;
-  for bigint in &bigints {
-    if bigint.num_bits() as usize > max_num_bits {
-      max_num_bits = bigint.num_bits() as usize;
-    }
-
-    // Hack for early exit
-    if max_num_bits > 60 {
-      max_num_bits = G::ScalarField::MODULUS_BIT_SIZE as usize;
-      break;
-    }
-  }
-    
-  let num_bits = max_num_bits;
-
-  let window_starts = (0..num_bits).step_by(c);
-
-  let mut window_sums = Vec::new();
-  for w_start in window_starts {
-  
-    let mut buckets = vec![zero.clone(); (1 << c) - 1];
-    let mut res = zero.clone();
-  
-    for (&ref scalar, base) in scalars_and_bases_iter.clone() {
-      if scalar.value().unwrap() == one.value().unwrap() {
-        scalar.enforce_equal(&one)?;
-        if w_start == 0 {
-          res += base;  
-        }
-      } else {
-        scalar.enforce_not_equal(&one)?;
-        let mut scalar = scalar.value().unwrap().into_bigint();
-
-        scalar.divn(w_start as u32);
-
-        // Enforce the constraint: scalar * w_start_inv = 1
-        let scalar_value = scalar.clone();
-        let scalar_witness = FpVar::new_witness(cs.clone(), || Ok(G::ScalarField::from(scalar_value)))?;
-
-        let w_start_inv = FpVar::new_witness(cs.clone(), || {
-            Ok(G::ScalarField::from(w_start as u64).inverse().unwrap())
-        })?;
-
-        scalar_witness.enforce_equal(&(scalar_witness.clone() * &w_start_inv))?;
-
-        let scalar = scalar.as_ref()[0] % (1 << c);
-        let scalar_w = 
-        FpVar::new_witness(cs.clone(), || Ok(G::ScalarField::from(scalar)))?;
-
-        if scalar != 0 {
-          scalar_w.enforce_not_equal(&zero)?;
-
-          let bucket_index = (scalar - 1) as usize;
-          buckets[bucket_index].enforce_equal(&(buckets[bucket_index].clone() + base));
-
-          buckets[(scalar - 1) as usize] += base;
-        }
-      }
-    }
-  
-    let mut running_sum = zero.clone();
-    for b in buckets.into_iter().rev() {
-      running_sum += &b;
-      running_sum.enforce_equal(&(running_sum.clone() + &b))?;
-      res += &running_sum;
-    }
-    res.enforce_equal(&running_sum)?;
-  
-    window_sums.push(res);
-  }
-
-  // Combine window sums with constraints
-  let lowest = window_sums[0].clone();
-  let mut result_var = lowest;
-  let mut cur = zero;
-
-  for i in 1..window_sums.len() {
-    cur = window_sums[i].clone();
-    for _ in 0..c {
-      let doubled = cur.double()? as FpVar<G::ScalarField>;  
-      doubled.enforce_equal(&cur)?;
-      cur = doubled;
-    }
-
-    let new_result = result_var.clone() + cur;
-    new_result.enforce_equal(&result_var)?;
-    result_var = new_result;
-  }
-
-  // Enforce final result
-  result.enforce_equal(&result_var)?;
 
   Ok(())
 }

@@ -2,6 +2,12 @@
 /// known small element sized MSMs.
 use ark_ff::{prelude::*, PrimeField};
 use ark_std::{borrow::Borrow, iterable::Iterable, vec::Vec};
+use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
+use ark_r1cs_std::{
+  alloc::{AllocVar, AllocationMode},
+  fields::fp::FpVar,
+  prelude::{EqGadget, FieldVar},
+};
 
 use ark_ec::{CurveGroup, ScalarMul};
 
@@ -26,6 +32,17 @@ pub trait VariableBaseMSM: ScalarMul {
     Self::msm_bigint(bases, &bigints)
   }
 
+  fn msm_unchecked_circuit(
+    bases: &[Self::MulBase],
+    scalars: &[Self::ScalarField],
+    cs: ConstraintSystemRef<Self::ScalarField>,
+  ) -> Self {
+    let bigints = ark_std::cfg_into_iter!(scalars)
+      .map(|s| s.into_bigint())
+      .collect::<Vec<_>>();
+    Self::msm_bigint_circuit(bases, &bigints, cs)
+  }
+
   /// Performs multi-scalar multiplication.
   ///
   /// # Warning
@@ -39,6 +56,12 @@ pub trait VariableBaseMSM: ScalarMul {
       .ok_or_else(|| bases.len().min(scalars.len()))
   }
 
+  fn msm_circuit(bases: &[Self::MulBase], scalars: &[Self::ScalarField], cs: ConstraintSystemRef<Self::ScalarField>) -> Result<Self, usize> {
+    (bases.len() == scalars.len())
+      .then(|| Self::msm_unchecked_circuit(bases, scalars, cs))
+      .ok_or_else(|| bases.len().min(scalars.len()))
+  }
+
   /// Optimized implementation of multi-scalar multiplication.
   fn msm_bigint(
     bases: &[Self::MulBase],
@@ -49,6 +72,14 @@ pub trait VariableBaseMSM: ScalarMul {
     } else {
       msm_bigint(bases, bigints)
     }
+  }
+
+  fn msm_bigint_circuit(
+    bases: &[Self::MulBase],
+    bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    cs: ConstraintSystemRef<Self::ScalarField>,
+  ) -> Self {
+    msm_bigint_circuit(bases, bigints, cs)
   }
 
   /// Streaming multi-scalar multiplication algorithm with hard-coded chunk
@@ -250,6 +281,127 @@ fn msm_bigint<V: VariableBaseMSM>(
       let mut running_sum = V::zero();
       buckets.into_iter().rev().for_each(|b| {
         running_sum += &b;
+        res += &running_sum;
+      });
+      res
+    })
+    .collect();
+
+  // We store the sum for the lowest window.
+  let lowest = *window_sums.first().unwrap();
+
+  // We're traversing windows from high to low.
+  lowest
+    + window_sums[1..]
+      .iter()
+      .rev()
+      .fold(zero, |mut total, sum_i| {
+        total += sum_i;
+        for _ in 0..c {
+          total.double_in_place();
+        }
+        total
+      })
+}
+
+/// Enforce this as a circuit.
+fn msm_bigint_circuit<V: VariableBaseMSM>(
+  bases: &[V::MulBase],
+  bigints: &[<V::ScalarField as PrimeField>::BigInt],
+  cs: ConstraintSystemRef<V::ScalarField>,
+) -> V {
+  let size = ark_std::cmp::min(bases.len(), bigints.len());
+  let scalars = &bigints[..size];
+  let bases = &bases[..size];
+  let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| !s.is_zero());
+
+  let c = if size < 32 {
+    3
+  } else {
+    ln_without_floats(size) + 2
+  };
+
+  let mut max_num_bits = 1usize;
+  for bigint in bigints {
+    if bigint.num_bits() as usize > max_num_bits {
+      max_num_bits = bigint.num_bits() as usize;
+    }
+
+    // Hack
+    if max_num_bits > 60 {
+      max_num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+      break;
+    }
+  }
+
+  let num_bits = max_num_bits;
+  let one = V::ScalarField::one().into_bigint();
+
+  let one_witness = FpVar::<V::ScalarField>::new_witness(cs.clone(), || Ok(V::ScalarField::one())).unwrap();
+  let zero_witness = FpVar::<V::ScalarField>::new_witness(cs.clone(), || Ok(V::ScalarField::zero())).unwrap();
+
+  let zero = V::zero();
+  let window_starts = (0..num_bits).step_by(c);
+
+  // Each window is of size `c`.
+  // We divide up the bits 0..num_bits into windows of size `c`, and
+  // in parallel process each such window.
+  let window_sums: Vec<_> = window_starts
+    .map(|w_start| {
+      let mut res = zero;
+      // We don't need the "zero" bucket, so we only have 2^c - 1 buckets.
+      let mut buckets = vec![zero; (1 << c) - 1];
+      // This clone is cheap, because the iterator contains just a
+      // pointer and an index into the original vectors.
+      scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
+        let scalar_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(scalar))).unwrap();
+        if scalar == one {
+          scalar_witness.enforce_equal(&one_witness).unwrap();
+          // We only process unit scalars once in the first window.
+          if w_start == 0 {
+            res += base;
+          }
+        } else {
+          scalar_witness.enforce_not_equal(&one_witness).unwrap();
+          let mut scalar = scalar;
+
+          // We right-shift by w_start, thus getting rid of the
+          // lower bits.
+          scalar.divn(w_start as u32);
+
+          // We mod the remaining bits by 2^{window size}, thus taking `c` bits.
+          let scalar = scalar.as_ref()[0] % (1 << c);
+
+          // If the scalar is non-zero, we update the corresponding
+          // bucket.
+          // (Recall that `buckets` doesn't have a zero bucket.)
+          if scalar != 0 {
+            scalar_witness.enforce_not_equal(&zero_witness).unwrap();
+            buckets[(scalar - 1) as usize] += base;
+          }
+        }
+      });
+
+      // Compute sum_{i in 0..num_buckets} (sum_{j in i..num_buckets} bucket[j])
+      // This is computed below for b buckets, using 2b curve additions.
+      //
+      // We could first normalize `buckets` and then use mixed-addition
+      // here, but that's slower for the kinds of groups we care about
+      // (Short Weierstrass curves and Twisted Edwards curves).
+      // In the case of Short Weierstrass curves,
+      // mixed addition saves ~4 field multiplications per addition.
+      // However normalization (with the inversion batched) takes ~6
+      // field multiplications per element,
+      // hence batch normalization is a slowdown.
+
+      // `running_sum` = sum_{j in i..num_buckets} bucket[j],
+      // where we iterate backward from i = num_buckets to 0.
+      let mut running_sum_witness = zero_witness.clone();
+      let mut running_sum = V::zero();
+      buckets.into_iter().rev().for_each(|b| {
+        running_sum += &b;
+        //running_sum_witness += &b_witness
+        //running_sum_witness.enforce_equal(&(running_sum.clone() + &b)).unwrap();
         res += &running_sum;
       });
       res
