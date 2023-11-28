@@ -337,11 +337,11 @@ impl<G: CurveGroup> BulletReductionProof<G> {
 
     let group_element = G::normalize_batch(G);
 
-    let G_hat: G = VariableBaseMSM::msm(group_element.as_ref(), s.as_ref()).unwrap();
+    let G_hat: G = VariableBaseMSM::msm_circuit(group_element.as_ref(), s.as_ref(), cs.clone()).unwrap();
     let G_hat_affine = G_hat.into_affine();
     let x = G_hat_affine.x().unwrap();
 
-    let _enforce_hat: G = VariableBaseMSM::msm_circuit(group_element.as_ref(), s.as_ref(), cs.clone()).unwrap();
+    //let _enforce_hat: G = VariableBaseMSM::msm_circuit(group_element.as_ref(), s.as_ref(), cs.clone()).unwrap();
 
     let a_hat = inner_product(a, &s);
     let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;

@@ -10,6 +10,7 @@ use ark_r1cs_std::{
 };
 
 use ark_ec::{CurveGroup, ScalarMul};
+use ark_r1cs_std::boolean::Boolean;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -72,6 +73,59 @@ pub trait VariableBaseMSM: ScalarMul {
     } else {
       msm_bigint(bases, bigints)
     }
+  }
+
+  fn log2_circuit(
+    cs: ConstraintSystemRef<Self::ScalarField>,
+    x: usize
+  ) -> Result<u32, SynthesisError> {
+
+    let x_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(x as u64)))?;
+    let zero_var = FpVar::new_constant(cs.clone(), Self::ScalarField::zero())?;
+
+    let mut power_of_two = Boolean::new_witness(
+      cs.clone(), 
+      || Ok(x.is_power_of_two())
+    )?;
+
+    if x == 0 {
+        x_witness.enforce_equal(&zero_var);
+        Ok(0 as u32)
+    } else if x.is_power_of_two() {
+        //x_witness.enforce_equal(&zero_var);
+        power_of_two.enforce_equal(&Boolean::constant(true));
+        Ok(1usize.leading_zeros() - x.leading_zeros())
+    } else {
+        x_witness.enforce_not_equal(&zero_var);
+        power_of_two.enforce_not_equal(&Boolean::constant(true));
+        Ok(0usize.leading_zeros() - x.leading_zeros())
+    }
+  }
+
+  fn ln_without_floats_circuit(
+    cs: ConstraintSystemRef<Self::ScalarField>,
+    a: usize,
+  ) -> Result<usize, SynthesisError> {
+
+    let a_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(a as u64)))?;
+    let log2_pre = Self::log2_circuit(cs.clone(), a)?;
+    let log2_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(log2_pre)))?;
+
+    let sixty_nine = FpVar::new_constant(cs.clone(), Self::ScalarField::from(69u8))?;
+    let one_hundred = FpVar::new_constant(cs.clone(), Self::ScalarField::from(100u8))?;
+
+    let computation = log2_witness * sixty_nine;
+    let numerator = log2_pre * 69; 
+    let result = numerator / 100; 
+    let result_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(result)))?;
+    let numerator_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(numerator)))?;
+
+    // Result * denominator = numerator
+    // Enforces numerator / denominator = result
+    let computation_div = (result_witness * one_hundred.clone());
+    numerator_witness.enforce_equal(&computation_div)?;
+
+    Ok(result as usize)
   }
 
   fn msm_bigint_circuit(
@@ -318,7 +372,7 @@ fn msm_bigint_circuit<V: VariableBaseMSM>(
   let c = if size < 32 {
     3
   } else {
-    ln_without_floats(size) + 2
+    V::ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
   };
 
   let mut max_num_bits = 1usize;
@@ -337,8 +391,9 @@ fn msm_bigint_circuit<V: VariableBaseMSM>(
   let num_bits = max_num_bits;
   let one = V::ScalarField::one().into_bigint();
 
-  let one_witness = FpVar::<V::ScalarField>::new_witness(cs.clone(), || Ok(V::ScalarField::one())).unwrap();
-  let zero_witness = FpVar::<V::ScalarField>::new_witness(cs.clone(), || Ok(V::ScalarField::zero())).unwrap();
+  let one_witness = FpVar::new_constant(cs.clone(), V::ScalarField::one()).unwrap();
+  let zero_witness = FpVar::new_constant(cs.clone(), V::ScalarField::zero()).unwrap();
+  //::<V::ScalarField>
 
   let zero = V::zero();
   let window_starts = (0..num_bits).step_by(c);
