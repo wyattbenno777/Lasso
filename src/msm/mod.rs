@@ -1,6 +1,6 @@
 /// Copy of ark_ec::VariableBaseMSM with minor modifications to speed up
 /// known small element sized MSMs.
-use ark_ff::{prelude::*, PrimeField};
+use ark_ff::{prelude::*, PrimeField, BigInteger};
 use ark_std::{borrow::Borrow, iterable::Iterable, vec::Vec};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
 use ark_r1cs_std::{
@@ -92,7 +92,6 @@ pub trait VariableBaseMSM: ScalarMul {
         x_witness.enforce_equal(&zero_var);
         Ok(0 as u32)
     } else if x.is_power_of_two() {
-        //x_witness.enforce_equal(&zero_var);
         power_of_two.enforce_equal(&Boolean::constant(true));
         Ok(1usize.leading_zeros() - x.leading_zeros())
     } else {
@@ -364,46 +363,76 @@ fn msm_bigint_circuit<V: VariableBaseMSM>(
   bigints: &[<V::ScalarField as PrimeField>::BigInt],
   cs: ConstraintSystemRef<V::ScalarField>,
 ) -> V {
+
   let size = ark_std::cmp::min(bases.len(), bigints.len());
+  let size_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(size as u64))).unwrap();
+
+  // These values are witnessed further down before they are used.
   let scalars = &bigints[..size];
   let bases = &bases[..size];
   let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| !s.is_zero());
+  
+  let thirty_two = FpVar::new_constant(cs.clone(), V::ScalarField::from(32u8)).unwrap();
+  
+  let zero = V::zero();
+  let zero_witness = FpVar::new_constant(cs.clone(), V::ScalarField::zero()).unwrap();
+
+  // 32 - size  if negative the result is zero due to ff.
+  let gt_constr = thirty_two.clone() - size_witness.clone();
 
   let c = if size < 32 {
+    gt_constr.enforce_equal(&zero_witness);
     3
   } else {
+    gt_constr.enforce_not_equal(&zero_witness);
     V::ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
   };
 
+  let c_witness = FpVar::new_constant(cs.clone(), V::ScalarField::from(c as u64)).unwrap();
+
   let mut max_num_bits = 1usize;
-  for bigint in bigints {
-    if bigint.num_bits() as usize > max_num_bits {
-      max_num_bits = bigint.num_bits() as usize;
+  let mut bigint_witnesses = Vec::new();
+  let sixty = FpVar::new_constant(cs.clone(), V::ScalarField::from(60u8)).unwrap();
+
+  for (i, bigint) in bigints.iter().enumerate()  {
+
+    bigint_witnesses.push(FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(bigints[i]))).unwrap());
+    FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(max_num_bits as u64))).unwrap();
+
+
+    // num_bits_bigint - max_num_bits; if positive the result is not zero due to ff.
+    let num_bits_bigint = bigint.num_bits() as usize;
+    let num_bits_bigint_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(num_bits_bigint as u64))).unwrap();
+    let max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(max_num_bits as u64))).unwrap();
+
+    let gt_max_num_bits = num_bits_bigint_witness.clone() - max_num_bits_witness.clone();
+    let gt_sixty = num_bits_bigint_witness.clone() - sixty.clone();
+
+    if num_bits_bigint > max_num_bits {
+      gt_max_num_bits.enforce_not_equal(&zero_witness);
+      max_num_bits = num_bits_bigint;
     }
 
     // Hack
     if max_num_bits > 60 {
+      gt_sixty.enforce_not_equal(&zero_witness);
       max_num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
       break;
     }
   }
 
   let num_bits = max_num_bits;
+  let num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(num_bits as u64))).unwrap();
+
   let one = V::ScalarField::one().into_bigint();
-
   let one_witness = FpVar::new_constant(cs.clone(), V::ScalarField::one()).unwrap();
-  let zero_witness = FpVar::new_constant(cs.clone(), V::ScalarField::zero()).unwrap();
-  //::<V::ScalarField>
 
-  let zero = V::zero();
   let window_starts = (0..num_bits).step_by(c);
-
-  // Each window is of size `c`.
-  // We divide up the bits 0..num_bits into windows of size `c`, and
-  // in parallel process each such window.
   let window_sums: Vec<_> = window_starts
     .map(|w_start| {
       let mut res = zero;
+      //ENDED_HERE
+      let w_start_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(w_start as u64))).unwrap();
       // We don't need the "zero" bucket, so we only have 2^c - 1 buckets.
       let mut buckets = vec![zero; (1 << c) - 1];
       // This clone is cheap, because the iterator contains just a

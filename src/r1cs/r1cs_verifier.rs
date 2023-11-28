@@ -341,8 +341,6 @@ impl<G: CurveGroup> BulletReductionProof<G> {
     let G_hat_affine = G_hat.into_affine();
     let x = G_hat_affine.x().unwrap();
 
-    //let _enforce_hat: G = VariableBaseMSM::msm_circuit(group_element.as_ref(), s.as_ref(), cs.clone()).unwrap();
-
     let a_hat = inner_product(a, &s);
     let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;
     enforce_inner_product(cs, a, &s, &a_hat_witness);
