@@ -18,17 +18,25 @@ use ark_crypto_primitives::sponge::{
 use ark_poly_commit::multilinear_pc::data_structures::Commitment;
 use ark_r1cs_std::{
   alloc::{AllocVar, AllocationMode},
+  fields::nonnative::NonNativeFieldVar,
   fields::fp::FpVar,
   prelude::{EqGadget, FieldVar},
 };
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
-
+use ark_r1cs_std::groups::curves::short_weierstrass::ProjectiveVar;
 use ark_serialize::*;
 use ark_ec::CurveGroup;
 use ark_r1cs_std::R1CSVar;
 use ark_std::One;
 use ark_ff::Field;
 use ark_ec::AffineRepr;
+
+use ark_bn254::Fr as Fr;
+use ark_bn254::Fq as Fq;
+use ark_bn254::G1Affine as G1Affine;
+use ark_bn254::G1Projective as G1Projective;
+use ark_bn254::G2Affine as G2Affine;
+use ark_bn254::G2Projective as G2Projective;
 
 #[cfg(not(feature = "ark-msm"))]
 use super::super::msm::VariableBaseMSM;
@@ -76,28 +84,28 @@ use super::super::msm::VariableBaseMSM;
 */
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Debug)]
-pub struct SumcheckInstanceProof<F: PrimeField> {
-  compressed_polys: Vec<CompressedUniPoly<F>>,
+pub struct SumcheckInstanceProof {
+  compressed_polys: Vec<CompressedUniPoly<Fr>>,
 }
 
 /// Univariate polynomial in constraint system
 #[derive(Clone)]
-pub struct UniPolyVar<F: PrimeField> {
-  pub coeffs: Vec<FpVar<F>>,
+pub struct UniPolyVar {
+  pub coeffs: Vec<FpVar<Fr>>,
 }
 
-impl<F: PrimeField> AllocVar<UniPoly<F>, F> for UniPolyVar<F> {
-  fn new_variable<T: Borrow<UniPoly<F>>>(
-    cs: impl Into<Namespace<F>>,
+impl AllocVar<UniPoly<Fr>, Fr> for UniPolyVar {
+  fn new_variable<T: Borrow<UniPoly<Fr>>>(
+    cs: impl Into<Namespace<Fr>>,
     f: impl FnOnce() -> Result<T, SynthesisError>,
     mode: AllocationMode,
   ) -> Result<Self, SynthesisError> {
     f().and_then(|c| {
       let cs = cs.into();
-      let cp: &UniPoly<F> = c.borrow();
+      let cp: &UniPoly<Fr> = c.borrow();
       let mut coeffs_var = Vec::new();
       for coeff in cp.coeffs.iter() {
-        let coeff_var = FpVar::<F>::new_variable(cs.clone(), || Ok(coeff), mode)?;
+        let coeff_var = FpVar::<Fr>::new_variable(cs.clone(), || Ok(coeff), mode)?;
         coeffs_var.push(coeff_var);
       }
       Ok(Self { coeffs: coeffs_var })
@@ -105,12 +113,12 @@ impl<F: PrimeField> AllocVar<UniPoly<F>, F> for UniPolyVar<F> {
   }
 }
 
-impl<F: PrimeField> UniPolyVar<F> {
-    pub fn eval_at_zero(&self) -> FpVar<F> {
+impl UniPolyVar {
+    pub fn eval_at_zero(&self) -> FpVar<Fr> {
       self.coeffs[0].clone()
     }
   
-    pub fn eval_at_one(&self) -> FpVar<F> {
+    pub fn eval_at_one(&self) -> FpVar<Fr> {
       let mut res = self.coeffs[0].clone();
       for i in 1..self.coeffs.len() {
         res = &res + &self.coeffs[i];
@@ -118,7 +126,7 @@ impl<F: PrimeField> UniPolyVar<F> {
       res
     }
   
-    pub fn evaluate(&self, r: &FpVar<F>) -> FpVar<F> {
+    pub fn evaluate(&self, r: &FpVar<Fr>) -> FpVar<Fr> {
       let mut eval = self.coeffs[0].clone();
       let mut power = r.clone();
   
@@ -128,28 +136,20 @@ impl<F: PrimeField> UniPolyVar<F> {
       }
       eval
     }
-}
 
-impl<G: CurveGroup> AppendToTranscript<G> for UniPolyVar<G::ScalarField> {
-
-    fn append_to_transcript<T: ProofTranscript<G>>(&self, label: &'static [u8], transcript: &mut T) {
-      
+    fn append_to_transcript<T: ProofTranscript<G1Projective>>(&self, label: &'static [u8], transcript: &mut T) {
       transcript.append_message(label, b"UniPolyVar_begin");
       
       for i in 0..self.coeffs.len() {
-      
-        let value = self.coeffs[i].value().unwrap();  
+        let value = self.coeffs[i].value().unwrap();
         transcript.append_scalar(b"coeff", &value);
-        
       }
       
       transcript.append_message(label, b"UniPolyVar_end");
     }
-  
-  }
+}
 
-
-impl<F: PrimeField> SumcheckInstanceProof<F> {
+impl SumcheckInstanceProof {
   /// Verify this sumcheck proof.
   /// Note: Verification does not execute the final check of sumcheck protocol: g_v(r_v) = oracle_g(r),
   /// as the oracle is not passed in. Expected that the caller will implement.
@@ -163,26 +163,26 @@ impl<F: PrimeField> SumcheckInstanceProof<F> {
   /// Returns (e, r)
   /// - `e`: Claimed evaluation at random point
   /// - `r`: Evaluation point
-  pub fn verify_sumcheck<G, T: ProofTranscript<G>>(
+  pub fn verify_sumcheck<G, T: ProofTranscript<G1Projective>>(
     &self,
-    cs: ConstraintSystemRef<F>,
-    claim: F,
+    cs: ConstraintSystemRef<Fr>,
+    claim: Fr,
     num_rounds: usize,
     degree_bound: usize,
     transcript: &mut T,
-  ) -> Result<(F, Vec<F>), SynthesisError>
+  ) -> Result<(Fr, Vec<Fr>), SynthesisError>
   where
-    G: CurveGroup<ScalarField = F>,
+    G: CurveGroup<ScalarField = Fr>,
   {
     let mut e = claim;
-    let mut r: Vec<F> = Vec::new();
+    let mut r: Vec<Fr> = Vec::new();
 
     // verify that there is a univariate polynomial for each round
     assert_eq!(self.compressed_polys.len(), num_rounds);
     for i in 0..self.compressed_polys.len() {
         let poly = self.compressed_polys[i].decompress(&e);
 
-        let mut fpv_poly = UniPolyVar::<F>::new_variable(cs.clone(), || Ok(poly.clone()), AllocationMode::Witness)?;
+        let mut fpv_poly = UniPolyVar::new_variable(cs.clone(), || Ok(poly.clone()), AllocationMode::Witness)?;
 
         // verify degree bound
         assert_eq!(poly.degree(), degree_bound);
@@ -191,11 +191,11 @@ impl<F: PrimeField> SumcheckInstanceProof<F> {
         assert_eq!(poly.eval_at_zero() + poly.eval_at_one(), e);
         let res = fpv_poly.eval_at_one() + fpv_poly.eval_at_zero();
 
-        let d_e = FpVar::<F>::new_input(cs.clone(), || Ok(e))?;
+        let d_e = FpVar::<Fr>::new_input(cs.clone(), || Ok(e))?;
         res.enforce_equal(&d_e)?;
 
         // append the prover's message to the transcript
-        <UniPolyVar<F> as AppendToTranscript<G>>::append_to_transcript(&fpv_poly, b"fpv_poly", transcript);
+        poly.append_to_transcript(b"fpv_poly", transcript);
 
         //derive the verifier's challenge for the next round
         let r_i = transcript.challenge_scalar(b"challenge_nextround");
@@ -213,23 +213,23 @@ impl<F: PrimeField> SumcheckInstanceProof<F> {
 
 // Used for dot product proof in PCS.
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-pub struct BulletReductionProof<G: CurveGroup> {
-  L_vec: Vec<G>,
-  R_vec: Vec<G>,
+pub struct BulletReductionProof {
+  L_vec: Vec<G1Projective>,
+  R_vec: Vec<G1Projective>,
 }
 
-impl<G: CurveGroup> BulletReductionProof<G> {
+impl BulletReductionProof {
 
-    pub fn verification_scalars<T: ProofTranscript<G>>(
+    pub fn verification_scalars<T: ProofTranscript<G1Projective>>(
         &self,
-        cs: ConstraintSystemRef<G::ScalarField>,
+        cs: ConstraintSystemRef<Fr>,
         transcript: &mut T,
         n: usize,
       ) -> Result<
         (
-        Vec<G::ScalarField>,
-        Vec<G::ScalarField>,
-        Vec<G::ScalarField>,
+        Vec<Fr>,
+        Vec<Fr>,
+        Vec<Fr>,
         ), SynthesisError>
     {
         let lg_n = self.L_vec.len();
@@ -255,7 +255,7 @@ impl<G: CurveGroup> BulletReductionProof<G> {
         .iter()
         .map(|x| x.inverse().unwrap())
         .collect::<Vec<_>>();
-        let mut all_inv = FpVar::<G::ScalarField>::new_witness(cs.clone(), || Ok(G::ScalarField::one()))?;
+        let mut all_inv = FpVar::<Fr>::new_witness(cs.clone(), || Ok(Fr::one()))?;
         for c in challenges_inv.iter() {
           let new_all_inv = &all_inv * c;
           new_all_inv.enforce_equal(&all_inv)?;
@@ -302,17 +302,17 @@ impl<G: CurveGroup> BulletReductionProof<G> {
             })?;
         }
 
-        let challenges_sq_fin: Vec<G::ScalarField> = challenges_witness
+        let challenges_sq_fin: Vec<Fr> = challenges_witness
             .iter()
             .map(|v| v.value().unwrap()) 
             .collect();
 
-        let challenges_inv_sq_fin: Vec<G::ScalarField> = challenges_inv
+        let challenges_inv_sq_fin: Vec<Fr> = challenges_inv
             .iter()
             .map(|v| v.value().unwrap())
             .collect();
 
-        let s_fin: Vec<G::ScalarField> = s
+        let s_fin: Vec<Fr> = s
             .iter()
             .map(|v| v.value().unwrap())
             .collect();
@@ -324,28 +324,32 @@ impl<G: CurveGroup> BulletReductionProof<G> {
   /// but for efficiency the actual protocols would use `verification_scalars`
   /// method to combine inner product verification with other checks
   /// in a single multiscalar multiplication.
-  pub fn verify<T: ProofTranscript<G>>(
+  pub fn verify<T: ProofTranscript<G1Projective>>(
     &self,
-    cs: ConstraintSystemRef<G::ScalarField>,
+    cs: ConstraintSystemRef<Fr>,
     transcript: &mut T,
     n: usize,
-    a: &[G::ScalarField],
-    Gamma: &G,
-    G: &[G],
-  ) -> Result<(G, G, G::ScalarField), SynthesisError> {
+    a: &[Fr],
+    Gamma: &G1Projective,
+    G: &[G1Projective],
+  ) -> Result<(G1Projective, G1Projective, Fr), SynthesisError> {
     let (u_sq, u_inv_sq, s) = self.verification_scalars(cs.clone(), transcript, n)?;
 
-    let group_element = G::normalize_batch(G);
+    let group_element = G1Projective::normalize_batch(G);
 
-    let G_hat: G = VariableBaseMSM::msm_circuit(group_element.as_ref(), s.as_ref(), cs.clone()).unwrap();
+    let G_hat : G1Projective = VariableBaseMSM::msm_circuit(group_element.as_ref(), s.as_ref(), cs.clone()).unwrap();
     let G_hat_affine = G_hat.into_affine();
     let x = G_hat_affine.x().unwrap();
+    let y = G_hat_affine.y().unwrap();
+    //let _s_wiz = FpVar::new_witness(cs.clone(), || {Ok(x)})?;
+    let _s_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(x)).unwrap();
+    //ProjectiveVar::new(x.clone(), self.y.clone(), G::one());
 
     let a_hat = inner_product(a, &s);
     let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;
     enforce_inner_product(cs, a, &s, &a_hat_witness);
 
-    let bases = G::normalize_batch(
+    let bases = G1Projective::normalize_batch(
       [self.L_vec.as_slice(), self.R_vec.as_slice(), &[*Gamma]]
         .concat()
         .as_ref(),
@@ -353,7 +357,7 @@ impl<G: CurveGroup> BulletReductionProof<G> {
     let scalars = u_sq
       .into_iter()
       .chain(u_inv_sq.into_iter())
-      .chain([G::ScalarField::one()])
+      .chain([Fr::one()])
       .collect::<Vec<_>>();
 
     let Gamma_hat = VariableBaseMSM::msm(bases.as_ref(), scalars.as_ref()).unwrap();
@@ -444,7 +448,7 @@ fn ln_without_floats(a: usize) -> usize {
   (ark_std::log2(a) * 69 / 100) as usize
 }
 
-
+/*
 /// Circuit gadget that implements the sumcheck verifier
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 struct PrimarySumcheck<G: CurveGroup, const ALPHA: usize> {
@@ -452,5 +456,5 @@ struct PrimarySumcheck<G: CurveGroup, const ALPHA: usize> {
   claimed_evaluation: G::ScalarField,
   eval_derefs: [G::ScalarField; ALPHA],
   //proof_derefs: CombinedTableEvalProof<G, ALPHA>,
-}
+}*/
 
