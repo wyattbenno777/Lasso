@@ -335,15 +335,15 @@ impl BulletReductionProof {
   ) -> Result<(G1Projective, G1Projective, Fr), SynthesisError> {
     let (u_sq, u_inv_sq, s) = self.verification_scalars(cs.clone(), transcript, n)?;
 
-    let group_element = G1Projective::normalize_batch(G);
+    //let group_element = G1Projective::normalize_batch(G);
 
-    let G_hat : G1Projective = VariableBaseMSM::msm_circuit(group_element.as_ref(), s.as_ref(), cs.clone()).unwrap();
+    let G_hat : G1Projective = G1Projective::msm_circuit(G, s.as_ref(), cs.clone()).unwrap();
     let G_hat_affine = G_hat.into_affine();
     let x = G_hat_affine.x().unwrap();
     let y = G_hat_affine.y().unwrap();
-    //let _s_wiz = FpVar::new_witness(cs.clone(), || {Ok(x)})?;
-    let _s_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(x)).unwrap();
-    //ProjectiveVar::new(x.clone(), self.y.clone(), G::one());
+
+    let _x_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(x)).unwrap();
+    //let _x_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(x)).unwrap();
 
     let a_hat = inner_product(a, &s);
     let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;

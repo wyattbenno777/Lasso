@@ -6,11 +6,20 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace,
 use ark_r1cs_std::{
   alloc::{AllocVar, AllocationMode},
   fields::fp::FpVar,
+  fields::nonnative::NonNativeFieldVar,
   prelude::{EqGadget, FieldVar},
 };
 
 use ark_ec::{CurveGroup, ScalarMul};
 use ark_r1cs_std::boolean::Boolean;
+
+use ark_ec::Group;
+use ark_bn254::Fr as Fr;
+use ark_bn254::Fq as Fq;
+use ark_bn254::G1Affine as G1Affine;
+use ark_bn254::G1Projective as G1Projective;
+use ark_bn254::G2Affine as G2Affine;
+use ark_bn254::G2Projective as G2Projective;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -33,17 +42,6 @@ pub trait VariableBaseMSM: ScalarMul {
     Self::msm_bigint(bases, &bigints)
   }
 
-  fn msm_unchecked_circuit(
-    bases: &[Self::MulBase],
-    scalars: &[Self::ScalarField],
-    cs: ConstraintSystemRef<Self::ScalarField>,
-  ) -> Self {
-    let bigints = ark_std::cfg_into_iter!(scalars)
-      .map(|s| s.into_bigint())
-      .collect::<Vec<_>>();
-    Self::msm_bigint_circuit(bases, &bigints, cs)
-  }
-
   /// Performs multi-scalar multiplication.
   ///
   /// # Warning
@@ -54,12 +52,6 @@ pub trait VariableBaseMSM: ScalarMul {
   fn msm(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Result<Self, usize> {
     (bases.len() == scalars.len())
       .then(|| Self::msm_unchecked(bases, scalars))
-      .ok_or_else(|| bases.len().min(scalars.len()))
-  }
-
-  fn msm_circuit(bases: &[Self::MulBase], scalars: &[Self::ScalarField], cs: ConstraintSystemRef<Self::ScalarField>) -> Result<Self, usize> {
-    (bases.len() == scalars.len())
-      .then(|| Self::msm_unchecked_circuit(bases, scalars, cs))
       .ok_or_else(|| bases.len().min(scalars.len()))
   }
 
@@ -75,63 +67,28 @@ pub trait VariableBaseMSM: ScalarMul {
     }
   }
 
-  fn log2_circuit(
-    cs: ConstraintSystemRef<Self::ScalarField>,
-    x: usize
-  ) -> Result<u32, SynthesisError> {
-
-    let x_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(x as u64)))?;
-    let zero_var = FpVar::new_constant(cs.clone(), Self::ScalarField::zero())?;
-
-    let mut power_of_two = Boolean::new_witness(
-      cs.clone(), 
-      || Ok(x.is_power_of_two())
-    )?;
-
-    if x == 0 {
-        x_witness.enforce_equal(&zero_var);
-        Ok(0 as u32)
-    } else if x.is_power_of_two() {
-        power_of_two.enforce_equal(&Boolean::constant(true));
-        Ok(1usize.leading_zeros() - x.leading_zeros())
-    } else {
-        x_witness.enforce_not_equal(&zero_var);
-        power_of_two.enforce_not_equal(&Boolean::constant(true));
-        Ok(0usize.leading_zeros() - x.leading_zeros())
-    }
+  fn msm_circuit(bases: &[G1Projective], scalars: &[Fr], cs: ConstraintSystemRef<Fr>) -> Result<G1Projective, usize> {
+    (bases.len() == scalars.len())
+      .then(|| Self::msm_unchecked_circuit(bases, scalars, cs))
+      .ok_or_else(|| bases.len().min(scalars.len()))
   }
 
-  fn ln_without_floats_circuit(
-    cs: ConstraintSystemRef<Self::ScalarField>,
-    a: usize,
-  ) -> Result<usize, SynthesisError> {
-
-    let a_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(a as u64)))?;
-    let log2_pre = Self::log2_circuit(cs.clone(), a)?;
-    let log2_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(log2_pre)))?;
-
-    let sixty_nine = FpVar::new_constant(cs.clone(), Self::ScalarField::from(69u8))?;
-    let one_hundred = FpVar::new_constant(cs.clone(), Self::ScalarField::from(100u8))?;
-
-    let computation = log2_witness * sixty_nine;
-    let numerator = log2_pre * 69; 
-    let result = numerator / 100; 
-    let result_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(result)))?;
-    let numerator_witness = FpVar::new_witness(cs.clone(), || Ok(Self::ScalarField::from(numerator)))?;
-
-    // Result * denominator = numerator
-    // Enforces numerator / denominator = result
-    let computation_div = (result_witness * one_hundred.clone());
-    numerator_witness.enforce_equal(&computation_div)?;
-
-    Ok(result as usize)
+  fn msm_unchecked_circuit(
+    bases: &[G1Projective],
+    scalars: &[Fr],
+    cs: ConstraintSystemRef<Fr>,
+  ) -> G1Projective {
+    let bigints = ark_std::cfg_into_iter!(scalars)
+      .map(|s| s.into_bigint())
+      .collect::<Vec<_>>();
+    Self::msm_bigint_circuit(bases, &bigints, cs)
   }
 
   fn msm_bigint_circuit(
-    bases: &[Self::MulBase],
-    bigints: &[<Self::ScalarField as PrimeField>::BigInt],
-    cs: ConstraintSystemRef<Self::ScalarField>,
-  ) -> Self {
+    bases: &[G1Projective],
+    bigints: &[<Fr as PrimeField>::BigInt],
+    cs: ConstraintSystemRef<Fr>,
+  ) -> G1Projective {
     msm_bigint_circuit(bases, bigints, cs)
   }
 
@@ -357,25 +314,77 @@ fn msm_bigint<V: VariableBaseMSM>(
       })
 }
 
+fn log2_circuit(
+  cs: ConstraintSystemRef<Fr>,
+  x: usize
+) -> Result<u32, SynthesisError> {
+
+  let x_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(x as u64)))?;
+  let zero_var = FpVar::new_constant(cs.clone(), Fr::zero())?;
+
+  let mut power_of_two = Boolean::new_witness(
+    cs.clone(), 
+    || Ok(x.is_power_of_two())
+  )?;
+
+  if x == 0 {
+      x_witness.enforce_equal(&zero_var);
+      Ok(0 as u32)
+  } else if x.is_power_of_two() {
+      power_of_two.enforce_equal(&Boolean::constant(true));
+      Ok(1usize.leading_zeros() - x.leading_zeros())
+  } else {
+      x_witness.enforce_not_equal(&zero_var);
+      power_of_two.enforce_not_equal(&Boolean::constant(true));
+      Ok(0usize.leading_zeros() - x.leading_zeros())
+  }
+}
+
+fn ln_without_floats_circuit(
+  cs: ConstraintSystemRef<Fr>,
+  a: usize,
+) -> Result<usize, SynthesisError> {
+
+  let a_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(a as u64)))?;
+  let log2_pre = log2_circuit(cs.clone(), a)?;
+  let log2_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(log2_pre)))?;
+
+  let sixty_nine = FpVar::new_constant(cs.clone(), Fr::from(69u8))?;
+  let one_hundred = FpVar::new_constant(cs.clone(), Fr::from(100u8))?;
+
+  let computation = log2_witness * sixty_nine;
+  let numerator = log2_pre * 69; 
+  let result = numerator / 100; 
+  let result_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(result)))?;
+  let numerator_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(numerator)))?;
+
+  // Result * denominator = numerator
+  // Enforces numerator / denominator = result
+  let computation_div = (result_witness * one_hundred.clone());
+  numerator_witness.enforce_equal(&computation_div)?;
+
+  Ok(result as usize)
+}
+
 /// Enforce this as a circuit.
-fn msm_bigint_circuit<V: VariableBaseMSM>(
-  bases: &[V::MulBase],
-  bigints: &[<V::ScalarField as PrimeField>::BigInt],
-  cs: ConstraintSystemRef<V::ScalarField>,
-) -> V {
+fn msm_bigint_circuit(
+  bases: &[G1Projective],
+  bigints: &[<Fr as PrimeField>::BigInt],
+  cs: ConstraintSystemRef<Fr>,
+) -> G1Projective {
 
   let size = ark_std::cmp::min(bases.len(), bigints.len());
-  let size_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(size as u64))).unwrap();
+  let size_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(size as u64))).unwrap();
 
   // These values are witnessed further down before they are used.
   let scalars = &bigints[..size];
   let bases = &bases[..size];
   let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| !s.is_zero());
   
-  let thirty_two = FpVar::new_constant(cs.clone(), V::ScalarField::from(32u8)).unwrap();
+  let thirty_two = FpVar::new_constant(cs.clone(), Fr::from(32u8)).unwrap();
   
-  let zero = V::zero();
-  let zero_witness = FpVar::new_constant(cs.clone(), V::ScalarField::zero()).unwrap();
+  let zero = G1Projective::zero();
+  let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
 
   // 32 - size  if negative the result is zero due to ff.
   let gt_constr = thirty_two.clone() - size_witness.clone();
@@ -385,25 +394,25 @@ fn msm_bigint_circuit<V: VariableBaseMSM>(
     3
   } else {
     gt_constr.enforce_not_equal(&zero_witness);
-    V::ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
+    ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
   };
 
-  let c_witness = FpVar::new_constant(cs.clone(), V::ScalarField::from(c as u64)).unwrap();
+  let _c_witness = FpVar::new_constant(cs.clone(), Fr::from(c as u64)).unwrap();
 
   let mut max_num_bits = 1usize;
+  let mut max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
+
   let mut bigint_witnesses = Vec::new();
-  let sixty = FpVar::new_constant(cs.clone(), V::ScalarField::from(60u8)).unwrap();
+  let sixty = FpVar::new_constant(cs.clone(), Fr::from(60u8)).unwrap();
 
   for (i, bigint) in bigints.iter().enumerate()  {
 
-    bigint_witnesses.push(FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(bigints[i]))).unwrap());
-    FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(max_num_bits as u64))).unwrap();
-
+    bigint_witnesses.push(FpVar::new_witness(cs.clone(), || Ok(Fr::from(bigints[i]))).unwrap());
+    FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
 
     // num_bits_bigint - max_num_bits; if positive the result is not zero due to ff.
     let num_bits_bigint = bigint.num_bits() as usize;
-    let num_bits_bigint_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(num_bits_bigint as u64))).unwrap();
-    let max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(max_num_bits as u64))).unwrap();
+    let num_bits_bigint_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_bits_bigint as u64))).unwrap();
 
     let gt_max_num_bits = num_bits_bigint_witness.clone() - max_num_bits_witness.clone();
     let gt_sixty = num_bits_bigint_witness.clone() - sixty.clone();
@@ -416,29 +425,35 @@ fn msm_bigint_circuit<V: VariableBaseMSM>(
     // Hack
     if max_num_bits > 60 {
       gt_sixty.enforce_not_equal(&zero_witness);
-      max_num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+      max_num_bits = Fr::MODULUS_BIT_SIZE as usize;
+      max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
       break;
     }
   }
 
   let num_bits = max_num_bits;
-  let num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(num_bits as u64))).unwrap();
+  let num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_bits as u64))).unwrap();
 
-  let one = V::ScalarField::one().into_bigint();
-  let one_witness = FpVar::new_constant(cs.clone(), V::ScalarField::one()).unwrap();
+  let one = Fr::one().into_bigint();
+  let one_witness = FpVar::new_constant(cs.clone(), Fr::one()).unwrap();
 
   let window_starts = (0..num_bits).step_by(c);
   let window_sums: Vec<_> = window_starts
     .map(|w_start| {
       let mut res = zero;
+      //let t_w = FpVar::new_witness(cs.clone(), || Ok(res)).unwrap();
+      //let _res_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res)).unwrap();
       //ENDED_HERE
-      let w_start_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(w_start as u64))).unwrap();
+      let w_start_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(w_start as u64))).unwrap();
       // We don't need the "zero" bucket, so we only have 2^c - 1 buckets.
       let mut buckets = vec![zero; (1 << c) - 1];
       // This clone is cheap, because the iterator contains just a
       // pointer and an index into the original vectors.
       scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
-        let scalar_witness = FpVar::new_witness(cs.clone(), || Ok(V::ScalarField::from(scalar))).unwrap();
+        let scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+        
+        let _x_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.x)).unwrap();
+
         if scalar == one {
           scalar_witness.enforce_equal(&one_witness).unwrap();
           // We only process unit scalars once in the first window.
@@ -481,7 +496,7 @@ fn msm_bigint_circuit<V: VariableBaseMSM>(
       // `running_sum` = sum_{j in i..num_buckets} bucket[j],
       // where we iterate backward from i = num_buckets to 0.
       let mut running_sum_witness = zero_witness.clone();
-      let mut running_sum = V::zero();
+      let mut running_sum = G1Projective::zero();
       buckets.into_iter().rev().for_each(|b| {
         running_sum += &b;
         //running_sum_witness += &b_witness
