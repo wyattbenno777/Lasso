@@ -20,6 +20,7 @@ use ark_bn254::G1Affine as G1Affine;
 use ark_bn254::G1Projective as G1Projective;
 use ark_bn254::G2Affine as G2Affine;
 use ark_bn254::G2Projective as G2Projective;
+use ark_ff::BigInt;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -441,35 +442,44 @@ fn msm_bigint_circuit(
   let window_sums: Vec<_> = window_starts
     .map(|w_start| {
       let mut res = zero;
-      //let t_w = FpVar::new_witness(cs.clone(), || Ok(res)).unwrap();
-      //let _res_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res)).unwrap();
+      let mut res_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.x)).unwrap();
+      let mut res_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.y)).unwrap();
+      let mut res_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.z)).unwrap();
       //ENDED_HERE
       let w_start_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(w_start as u64))).unwrap();
       // We don't need the "zero" bucket, so we only have 2^c - 1 buckets.
       let mut buckets = vec![zero; (1 << c) - 1];
+      let mut buckets_witnesses = vec![(res_x.clone(), res_y.clone(), res_z.clone()); (1 << c) - 1];
       // This clone is cheap, because the iterator contains just a
       // pointer and an index into the original vectors.
       scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
-        let scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+        let mut scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
         
-        let _x_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.x)).unwrap();
+        let base_x_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.x)).unwrap();
+        let base_y_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.y)).unwrap();
+        let base_z_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.z)).unwrap();
 
         if scalar == one {
           scalar_witness.enforce_equal(&one_witness).unwrap();
           // We only process unit scalars once in the first window.
           if w_start == 0 {
             res += base;
+            res_x += base_x_witness;
+            res_y += base_y_witness;
+            res_z += base_z_witness;
           }
         } else {
           scalar_witness.enforce_not_equal(&one_witness).unwrap();
           let mut scalar = scalar;
+          scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
 
-          // We right-shift by w_start, thus getting rid of the
-          // lower bits.
-          scalar.divn(w_start as u32);
+          // We right-shift by w_start, thus getting rid of the lower bits.
+          scalar = divn_circuit(scalar, w_start as u32, cs.clone());
 
           // We mod the remaining bits by 2^{window size}, thus taking `c` bits.
+          //TODO
           let scalar = scalar.as_ref()[0] % (1 << c);
+          scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
 
           // If the scalar is non-zero, we update the corresponding
           // bucket.
@@ -477,24 +487,13 @@ fn msm_bigint_circuit(
           if scalar != 0 {
             scalar_witness.enforce_not_equal(&zero_witness).unwrap();
             buckets[(scalar - 1) as usize] += base;
+            buckets_witnesses[(scalar - 1) as usize].0 += base_x_witness;
+            buckets_witnesses[(scalar - 1) as usize].1 += base_y_witness;
+            buckets_witnesses[(scalar - 1) as usize].2 += base_z_witness;
           }
         }
       });
 
-      // Compute sum_{i in 0..num_buckets} (sum_{j in i..num_buckets} bucket[j])
-      // This is computed below for b buckets, using 2b curve additions.
-      //
-      // We could first normalize `buckets` and then use mixed-addition
-      // here, but that's slower for the kinds of groups we care about
-      // (Short Weierstrass curves and Twisted Edwards curves).
-      // In the case of Short Weierstrass curves,
-      // mixed addition saves ~4 field multiplications per addition.
-      // However normalization (with the inversion batched) takes ~6
-      // field multiplications per element,
-      // hence batch normalization is a slowdown.
-
-      // `running_sum` = sum_{j in i..num_buckets} bucket[j],
-      // where we iterate backward from i = num_buckets to 0.
       let mut running_sum_witness = zero_witness.clone();
       let mut running_sum = G1Projective::zero();
       buckets.into_iter().rev().for_each(|b| {
@@ -522,6 +521,45 @@ fn msm_bigint_circuit(
         }
         total
       })
+}
+
+fn divn_circuit(
+  mut scalar: <Fr as PrimeField>::BigInt,
+  mut n: u32,
+  cs: ConstraintSystemRef<Fr>
+) -> <Fr as PrimeField>::BigInt {
+
+  let num_limbs = (Fr::MODULUS_BIT_SIZE as usize + 63) / 64;
+  let num_limbs_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_limbs as u32))).unwrap();
+
+  let n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(n))).unwrap();
+  let sixty_four = FpVar::new_constant(cs.clone(), Fr::from(64u8)).unwrap();
+  let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
+
+  if n >= (64 * num_limbs) as u32 {
+    return <Fr as PrimeField>::BigInt::from(0u64);
+  }
+
+  while n >= 64 {
+    let mut t = 0;
+    for i in 0..num_limbs {
+        core::mem::swap(&mut t, &mut scalar.0[num_limbs - i - 1]);
+    }
+    n -= 64;
+  }
+
+  if n > 0 {
+    let mut t = 0;
+    #[allow(unused)]
+    for i in 0..num_limbs {
+        let a = &mut scalar.0[num_limbs - i - 1];
+        let t2 = *a << (64 - n);
+        *a >>= n;
+        *a |= t;
+        t = t2;
+    }
+  }
+  scalar
 }
 
 // From: https://github.com/arkworks-rs/gemini/blob/main/src/kzg/msm/variable_base.rs#L20
