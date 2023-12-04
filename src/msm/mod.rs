@@ -532,31 +532,86 @@ fn divn_circuit(
   let num_limbs = (Fr::MODULUS_BIT_SIZE as usize + 63) / 64;
   let num_limbs_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_limbs as u32))).unwrap();
 
-  let n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(n))).unwrap();
+  let mut n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(n))).unwrap();
   let sixty_four = FpVar::new_constant(cs.clone(), Fr::from(64u8)).unwrap();
   let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
-
-  if n >= (64 * num_limbs) as u32 {
+  
+  // n - (64 * limbs) if negative the result is zero due to ff.
+  let compare_constr = n_witness.clone() - (sixty_four.clone() * num_limbs_witness.clone());
+  let compare_constr_2 = sixty_four.clone() * num_limbs_witness.clone();
+  if n > (64 * num_limbs) as u32 {
+    compare_constr.enforce_not_equal(&zero_witness);
+    return <Fr as PrimeField>::BigInt::from(0u64);
+  } else if n == (64 * num_limbs) as u32 {
+    n_witness.enforce_equal(&compare_constr_2);
     return <Fr as PrimeField>::BigInt::from(0u64);
   }
 
+  let compare_constr2 = sixty_four.clone() - n_witness.clone();
+
   while n >= 64 {
-    let mut t = 0;
-    for i in 0..num_limbs {
-        core::mem::swap(&mut t, &mut scalar.0[num_limbs - i - 1]);
+
+    if n > 64 {
+      compare_constr2.enforce_not_equal(&zero_witness);
+    } else {
+      n_witness.enforce_equal(&sixty_four);
     }
+
+    let mut t = 0;
+    let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
+    let mut scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - 0 - 1]))).unwrap();
+    for i in 0..num_limbs {
+        let mut i_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(i as u64))).unwrap();
+
+        core::mem::swap(&mut t, &mut scalar.0[num_limbs - i - 1]);
+
+        //TODO: this may need to be a bit decomp. Or an input into the circuit.
+        t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - i - 1]))).unwrap();
+        scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t))).unwrap()
+    }
+    n_witness = n_witness.clone() - sixty_four.clone();
     n -= 64;
   }
 
   if n > 0 {
+    n_witness.enforce_not_equal(&zero_witness);
     let mut t = 0;
+    let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
+
     #[allow(unused)]
     for i in 0..num_limbs {
         let a = &mut scalar.0[num_limbs - i - 1];
+        let mut a_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(*a as u64))).unwrap();
+
+        let two_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2 as u32))).unwrap();
+        let mut cur_power = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
+        
+        for _ in 0..(64 - n) {
+          cur_power = cur_power.clone() * two_witness.clone();
+        }
+
         let t2 = *a << (64 - n);
+        let t2_witness = a_witness.clone() * cur_power.clone();
+        let t2_end_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t2 as u64))).unwrap();
+        t2_witness.enforce_equal(&t2_end_witness);
+
+        let mut cur_power_2 = a_witness.clone();
+        
         *a >>= n;
+        for _ in 0..n {
+          cur_power_2 = cur_power_2.clone() + cur_power_2.clone();
+        }
+
         *a |= t;
+        let temp = a_witness.clone() + t_witness.clone();
+        let mut out = a_witness.clone() * temp.clone();
+        out = out.clone() + t_witness.clone();
+
+        let a_end_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(*a as u64))).unwrap();
+        out.enforce_equal(&a_end_witness);
+
         t = t2;
+        t_witness = t2_witness;
     }
   }
   scalar
