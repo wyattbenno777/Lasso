@@ -477,9 +477,29 @@ fn msm_bigint_circuit(
           scalar = divn_circuit(scalar, w_start as u32, cs.clone());
 
           // We mod the remaining bits by 2^{window size}, thus taking `c` bits.
-          //TODO
+          let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1 as u32))).unwrap();
+          let two_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2 as u32))).unwrap();
+          let mut cur_power = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
+          
+          for _ in 0..c {
+            cur_power = cur_power.clone() * two_witness.clone();
+          }
+  
+          let one_end_witness = one_witness.clone() * cur_power.clone();
+          let mut temp_scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.as_ref()[0]))).unwrap();
+          let temp_c_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1 << c))).unwrap();
+
+          //TODO mod gadget.
+          let mut temp = 0;
+          while temp < scalar.as_ref()[0] {
+            temp = temp + (1 << c);
+            temp_scalar_witness = temp_scalar_witness.clone() + temp_c_witness.clone();
+          }
+          temp_scalar_witness = temp_scalar_witness.clone() - scalar_witness.clone();
+          
           let scalar = scalar.as_ref()[0] % (1 << c);
           scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+          temp_scalar_witness.enforce_equal(&scalar_witness);
 
           // If the scalar is non-zero, we update the corresponding
           // bucket.
@@ -494,17 +514,30 @@ fn msm_bigint_circuit(
         }
       });
 
-      let mut running_sum_witness = zero_witness.clone();
+      let zeros_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(0u8))).unwrap();
+      let mut running_sum_witness = (zeros_witness.clone(), zeros_witness.clone(), zeros_witness.clone());
       let mut running_sum = G1Projective::zero();
-      buckets.into_iter().rev().for_each(|b| {
+      for (i, b) in buckets.into_iter().rev().enumerate() {
         running_sum += &b;
-        //running_sum_witness += &b_witness
-        //running_sum_witness.enforce_equal(&(running_sum.clone() + &b)).unwrap();
+
+        let bucket_elem_x = buckets_witnesses[i].0.clone();
+        let bucket_elem_y = buckets_witnesses[i].1.clone();
+        let bucket_elem_z = buckets_witnesses[i].2.clone();
+        running_sum_witness.0 += bucket_elem_x;
+        running_sum_witness.1 += bucket_elem_y;
+        running_sum_witness.2 += bucket_elem_z;
+
         res += &running_sum;
-      });
+        res_x += running_sum_witness.0.clone();
+        res_y += running_sum_witness.1.clone();
+        res_z += running_sum_witness.2.clone();
+      }
       res
     })
     .collect();
+
+  
+  //HERE
 
   // We store the sum for the lowest window.
   let lowest = *window_sums.first().unwrap();
