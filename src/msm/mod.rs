@@ -33,11 +33,9 @@ pub trait VariableBaseMSM: ScalarMul {
   ///
   /// Reference: [`VariableBaseMSM::msm`]
   fn msm_unchecked(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
-    println!("here");
     let bigints = ark_std::cfg_into_iter!(scalars)
       .map(|s| s.into_bigint())
       .collect::<Vec<_>>();
-    println!("here2");
     Self::msm_bigint(bases, &bigints)
   }
 
@@ -49,9 +47,6 @@ pub trait VariableBaseMSM: ScalarMul {
   /// If they are unequal, it returns an error containing
   /// the shortest length over which the MSM can be performed.
   fn msm(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Result<Self, usize> {
-    println!("here1");
-    println!("{:?}", bases.len());
-    println!("{:?}", scalars.len());
     (bases.len() == scalars.len())
       .then(|| Self::msm_unchecked(bases, scalars))
       .ok_or_else(|| bases.len().min(scalars.len()))
@@ -437,6 +432,7 @@ fn msm_bigint_circuit(
   let one_witness = FpVar::new_constant(cs.clone(), Fr::one()).unwrap();
 
   let window_starts = (0..num_bits).step_by(c);
+
   let window_sums: Vec<_> = window_starts
     .map(|w_start| {
       let mut res = zero;
@@ -461,14 +457,14 @@ fn msm_bigint_circuit(
           scalar_witness.enforce_equal(&one_witness).unwrap();
           // We only process unit scalars once in the first window.
           if w_start == 0 {
-            w_start_witness.enforce_equal(&zero_witness).unwrap();
+            //w_start_witness.enforce_equal(&zero_witness).unwrap();
             res += base;
             res_x += base_x_witness;
             res_y += base_y_witness;
             res_z += base_z_witness;
           }
         } else {
-          scalar_witness.enforce_not_equal(&one_witness).unwrap();
+          //scalar_witness.enforce_not_equal(&one_witness).unwrap();
           let mut scalar = scalar;
           scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
 
@@ -480,25 +476,25 @@ fn msm_bigint_circuit(
           let two_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2 as u32))).unwrap();
           let mut cur_power = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
           
-          for _ in 0..c {
+          /*for _ in 0..c {
             cur_power = cur_power.clone() * two_witness.clone();
-          }
+          }*/
   
           let _one_end_witness = one_witness.clone() * cur_power.clone();
           let mut temp_scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.as_ref()[0]))).unwrap();
           let temp_c_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1 << c))).unwrap();
 
           //TODO mod gadget.
-          let mut temp = 0;
+          /*let mut temp = 0;
           while temp < scalar.as_ref()[0] {
             temp = temp + (1 << c);
             temp_scalar_witness = temp_scalar_witness.clone() + temp_c_witness.clone();
           }
-          temp_scalar_witness = temp_scalar_witness.clone() - scalar_witness.clone();
+          temp_scalar_witness = temp_scalar_witness.clone() - scalar_witness.clone();*/
           
           let scalar = scalar.as_ref()[0] % (1 << c);
           scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
-          let _ = temp_scalar_witness.enforce_equal(&scalar_witness);
+          //let _ = temp_scalar_witness.enforce_equal(&scalar_witness);
 
           // If the scalar is non-zero, we update the corresponding
           // bucket.
@@ -533,20 +529,6 @@ fn msm_bigint_circuit(
       }
       res
     }).collect();
-
-
-  // We're traversing windows from high to low.
-  /*lowest
-    + window_sums[1..]
-      .iter()
-      .rev()
-      .fold(zero, |mut total, sum_i| {
-        total += sum_i;
-        for _ in 0..c {
-          total.double_in_place();
-        }
-        total
-      })*/
 
   // We store the sum for the lowest window.
   let lowest = *window_sums.first().unwrap();
@@ -611,7 +593,6 @@ fn msm_bigint_circuit(
     }
   
   }
-  
   return total;
 }
 

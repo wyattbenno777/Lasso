@@ -458,6 +458,7 @@ mod tests {
   use ark_bn254::{Fr, G1Projective};
   use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError, ConstraintSystem};
   use merlin::Transcript;
+  //use serde::Serialize;
 
   #[test]
   fn bullet_reduction_constraint_count() -> Result<(), SynthesisError> {
@@ -485,6 +486,9 @@ mod tests {
       g_vec.as_slice(), );
     
     println!("Number of constraints: {}", cs_ref.num_constraints());
+
+    //let serialized = serde_json::to_string(&cs).unwrap();
+    //std::fs::write("constraints.json", serialized);
     
     Ok(())
   }
