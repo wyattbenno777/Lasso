@@ -335,32 +335,32 @@ impl BulletReductionProof {
   ) -> Result<(G1Projective, G1Projective, Fr), SynthesisError> {
     let (u_sq, u_inv_sq, s) = self.verification_scalars(cs.clone(), transcript, n)?;
 
-    //let group_element = G1Projective::normalize_batch(G);
-
     let G_hat : G1Projective = G1Projective::msm_circuit(G, s.as_ref(), cs.clone()).unwrap();
     let G_hat_affine = G_hat.into_affine();
     let x = G_hat_affine.x().unwrap();
     let y = G_hat_affine.y().unwrap();
 
     let _x_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(x)).unwrap();
-    //let _x_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(x)).unwrap();
+    let _y_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(y)).unwrap();
 
-    let a_hat = inner_product(a, &s);
+    let a_hat = inner_product_circuit(cs.clone(), a, &s);
     let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;
-    enforce_inner_product(cs, a, &s, &a_hat_witness);
 
-    let bases = G1Projective::normalize_batch(
-      [self.L_vec.as_slice(), self.R_vec.as_slice(), &[*Gamma]]
-        .concat()
-        .as_ref(),
-    );
+    let bases = [
+      self.L_vec.as_slice(),
+      self.R_vec.as_slice(),
+      &[*Gamma]
+      ].concat();
+
+    let bases = bases.as_slice();
+
     let scalars = u_sq
       .into_iter()
       .chain(u_inv_sq.into_iter())
       .chain([Fr::one()])
       .collect::<Vec<_>>();
 
-    let Gamma_hat = VariableBaseMSM::msm(bases.as_ref(), scalars.as_ref()).unwrap();
+    let Gamma_hat = G1Projective::msm_circuit(bases, scalars.as_ref(), cs.clone()).unwrap();
 
     Ok((G_hat, Gamma_hat, a_hat))
   }
@@ -379,27 +379,26 @@ pub fn inner_product<F: PrimeField>(a: &[F], b: &[F]) -> F {
   out
 }
 
-fn enforce_inner_product<F: PrimeField>(
+fn inner_product_circuit<F: PrimeField>(
   cs: ConstraintSystemRef<F>, 
   a: &[F], 
   b: &[F],
-  result: &FpVar<F>
-) -> Result<(), SynthesisError> {
+) -> F {
 
   assert_eq!(a.len(), b.len(), "Vectors must have equal length");
 
-  let mut acc = FpVar::new_witness(cs.clone(), || Ok(F::zero()))?;
+  let mut acc = FpVar::new_witness(cs.clone(), || Ok(F::zero())).unwrap();
+  let mut out = F::zero();
   for i in 0..a.len() {
-      let a_var = FpVar::new_input(cs.clone(), || Ok(a[i]))?;
-      let b_var = FpVar::new_input(cs.clone(), || Ok(b[i]))?;
+      let a_var = FpVar::new_input(cs.clone(), || Ok(a[i])).unwrap();
+      let b_var = FpVar::new_input(cs.clone(), || Ok(b[i])).unwrap();
 
       let mul = a_var * b_var;
       acc += mul; 
+      out += a[i] * b[i];
   }
 
-  result.enforce_equal(&acc)?;
-
-  Ok(())
+  out
 }
 
 fn make_digits(a: &impl BigInteger, w: usize, num_bits: usize) -> Vec<i64> {
