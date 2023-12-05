@@ -387,14 +387,12 @@ fn msm_bigint_circuit(
   let zero = G1Projective::zero();
   let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
 
-  // 32 - size  if negative the result is zero due to ff.
-  let gt_constr = thirty_two.clone() - size_witness.clone();
 
+  // Constrain: 0 <= size < 32
   let c = if size < 32 {
-    gt_constr.enforce_equal(&zero_witness);
+    size_witness.enforce_cmp(&thirty_two, core::cmp::Ordering::Less, false);
     3
   } else {
-    gt_constr.enforce_not_equal(&zero_witness);
     ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
   };
 
@@ -411,21 +409,20 @@ fn msm_bigint_circuit(
     bigint_witnesses.push(FpVar::new_witness(cs.clone(), || Ok(Fr::from(bigints[i]))).unwrap());
     FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
 
-    // num_bits_bigint - max_num_bits; if positive the result is not zero due to ff.
     let num_bits_bigint = bigint.num_bits() as usize;
     let num_bits_bigint_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_bits_bigint as u64))).unwrap();
 
-    let gt_max_num_bits = num_bits_bigint_witness.clone() - max_num_bits_witness.clone();
-    let gt_sixty = num_bits_bigint_witness.clone() - sixty.clone();
-
+    // Constrain: 0 <= max_num_bits < num_bits_bigint
     if num_bits_bigint > max_num_bits {
-      gt_max_num_bits.enforce_not_equal(&zero_witness);
+      max_num_bits_witness.enforce_cmp(&num_bits_bigint_witness, core::cmp::Ordering::Less, false);
       max_num_bits = num_bits_bigint;
     }
 
-    // Hack
+    // Constrain: 0 <= 60 < max_num_bits
+    //https://github.com/arkworks-rs/r1cs-std/blob/61640099e6532d1fb26df290e3db6a38d3c32457/src/fields/fp/cmp.rs#L18
     if max_num_bits > 60 {
-      gt_sixty.enforce_not_equal(&zero_witness);
+      sixty.enforce_cmp(&max_num_bits_witness, core::cmp::Ordering::Less, false);
+
       max_num_bits = Fr::MODULUS_BIT_SIZE as usize;
       max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
       break;
@@ -463,6 +460,7 @@ fn msm_bigint_circuit(
           scalar_witness.enforce_equal(&one_witness).unwrap();
           // We only process unit scalars once in the first window.
           if w_start == 0 {
+            w_start_witness.enforce_equal(&zero_witness).unwrap();
             res += base;
             res_x += base_x_witness;
             res_y += base_y_witness;
@@ -536,8 +534,6 @@ fn msm_bigint_circuit(
     })
     .collect();
 
-  
-  //HERE
 
   // We store the sum for the lowest window.
   let lowest = *window_sums.first().unwrap();
@@ -569,26 +565,20 @@ fn divn_circuit(
   let sixty_four = FpVar::new_constant(cs.clone(), Fr::from(64u8)).unwrap();
   let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
   
-  // n - (64 * limbs) if negative the result is zero due to ff.
-  let compare_constr = n_witness.clone() - (sixty_four.clone() * num_limbs_witness.clone());
-  let compare_constr_2 = sixty_four.clone() * num_limbs_witness.clone();
+  let compare_constr = sixty_four.clone() * num_limbs_witness.clone();
+  // Constrain: 0 <= compare_constr < n
   if n > (64 * num_limbs) as u32 {
-    compare_constr.enforce_not_equal(&zero_witness);
+    compare_constr.enforce_cmp(&n_witness, core::cmp::Ordering::Less, false);
     return <Fr as PrimeField>::BigInt::from(0u64);
   } else if n == (64 * num_limbs) as u32 {
-    n_witness.enforce_equal(&compare_constr_2);
+    n_witness.enforce_equal(&compare_constr);
     return <Fr as PrimeField>::BigInt::from(0u64);
   }
 
-  let compare_constr2 = sixty_four.clone() - n_witness.clone();
-
   while n >= 64 {
 
-    if n > 64 {
-      compare_constr2.enforce_not_equal(&zero_witness);
-    } else {
-      n_witness.enforce_equal(&sixty_four);
-    }
+    // Constrain: 0 <= 64 <= n
+    sixty_four.enforce_cmp(&n_witness, core::cmp::Ordering::Less, true);
 
     let mut t = 0;
     let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
@@ -607,7 +597,8 @@ fn divn_circuit(
   }
 
   if n > 0 {
-    n_witness.enforce_not_equal(&zero_witness);
+    // Constrain: 0 <= 0 < n
+    zero_witness.enforce_cmp(&n_witness, core::cmp::Ordering::Less, false);
     let mut t = 0;
     let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
 
