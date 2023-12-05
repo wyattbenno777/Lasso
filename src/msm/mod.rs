@@ -531,15 +531,11 @@ fn msm_bigint_circuit(
         res_z += running_sum_witness.2.clone();
       }
       res
-    })
-    .collect();
+    }).collect();
 
-
-  // We store the sum for the lowest window.
-  let lowest = *window_sums.first().unwrap();
 
   // We're traversing windows from high to low.
-  lowest
+  /*lowest
     + window_sums[1..]
       .iter()
       .rev()
@@ -549,7 +545,73 @@ fn msm_bigint_circuit(
           total.double_in_place();
         }
         total
-      })
+      })*/
+
+  // We store the sum for the lowest window.
+  let lowest = *window_sums.first().unwrap();
+
+  let mut total = lowest;
+  let mut total_witness_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(total.x))).unwrap();
+  let mut total_witness_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(total.y))).unwrap();
+
+  for i in (1..window_sums.len()).rev() {
+
+    let window_sum_witness_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(window_sums[i].x))).unwrap();
+    let window_sum_witness_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(window_sums[i].y))).unwrap();
+  
+    total_witness_x += window_sum_witness_x;
+    total_witness_y += window_sum_witness_y;
+    total += window_sums[i];
+    
+    //https://github.com/arkworks-rs/algebra/blob/860a986360a1deb19a4d06b991a1a700d34b1298/curves/bn254/src/curves/g1.rs#L29
+    let COEFF_A = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::ZERO)).unwrap();
+
+    for _doubled in 0..c {
+
+      //Start - double in place as a circuit.
+
+      // xy
+      let xy = &total_witness_x * &total_witness_y;
+      let x2 = total_witness_x.square().unwrap();
+      let y2 = total_witness_y.square().unwrap();
+
+      let a_x2 = &x2 * COEFF_A.clone();
+
+      // Compute x3 = (2xy) / (ax^2 + y^2)
+      let t0 = xy.double();
+      let t1 = COEFF_A.clone() * &x2 + &y2;
+      let x3 = t0.unwrap() * t1.inverse().unwrap();
+
+      let a_x2_plus_y2 = &a_x2 + &y2;
+      let two_xy = xy.double().unwrap();
+      x3.mul_equals(&a_x2_plus_y2, &two_xy).unwrap();
+
+      // Compute y3 = (y^2 - ax^2) / (2 - ax^2 - y^2)
+      let two_i = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::ONE)).unwrap();
+      let two_ii = two_i.double().unwrap();
+
+      let a_x2 = COEFF_A.clone() * &x2;
+      let t0 = y2.clone() - &a_x2;
+      let t1 = two_ii.clone() - &a_x2 - &y2;
+
+      let y3 = t0 * t1.inverse().unwrap();
+
+      let y2_minus_a_x2 = &y2 - &a_x2;
+      let two_minus_ax2_minus_y2 = (&a_x2 + &y2).negate().unwrap() + two_ii.clone();
+
+      y3.mul_equals(&two_minus_ax2_minus_y2, &y2_minus_a_x2).unwrap();
+
+      total_witness_x = x3;
+      total_witness_y = y3;
+
+      // END double in place.
+
+      total.double_in_place(); 
+    }
+  
+  }
+  
+  return total;
 }
 
 fn divn_circuit(
