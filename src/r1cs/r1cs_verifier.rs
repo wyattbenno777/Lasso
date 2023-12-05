@@ -457,3 +457,35 @@ struct PrimarySumcheck<G: CurveGroup, const ALPHA: usize> {
   //proof_derefs: CombinedTableEvalProof<G, ALPHA>,
 }*/
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use ark_bn254::{Fr, G1Projective};
+  use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError, ConstraintSystem};
+  use crate::utils::transcript::ProofTranscript;
+  use merlin::Transcript;
+
+  #[test]
+  fn bullet_reduction_constraint_count() -> Result<(), SynthesisError> {
+    let cs = ConstraintSystem::<Fr>::new();
+    let cs_ref = ConstraintSystemRef::new(cs);
+    
+    let l_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 34];
+    let r_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 34];
+    
+    let proof = BulletReductionProof {
+        L_vec: l_vec,
+        R_vec: r_vec,
+    };
+
+    let mut verifier_transcript = Transcript::new(b"example");
+    
+    proof.verify(cs_ref.clone(), &mut verifier_transcript, 17179869184, &[], &G1Projective::rand(&mut ark_std::test_rng()), &[])?;
+    
+    println!("Number of constraints: {}", cs_ref.num_constraints());
+    
+    Ok(())
+  }
+
+}
+
