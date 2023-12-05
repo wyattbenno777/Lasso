@@ -33,9 +33,11 @@ pub trait VariableBaseMSM: ScalarMul {
   ///
   /// Reference: [`VariableBaseMSM::msm`]
   fn msm_unchecked(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
+    println!("here");
     let bigints = ark_std::cfg_into_iter!(scalars)
       .map(|s| s.into_bigint())
       .collect::<Vec<_>>();
+    println!("here2");
     Self::msm_bigint(bases, &bigints)
   }
 
@@ -47,6 +49,9 @@ pub trait VariableBaseMSM: ScalarMul {
   /// If they are unequal, it returns an error containing
   /// the shortest length over which the MSM can be performed.
   fn msm(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Result<Self, usize> {
+    println!("here1");
+    println!("{:?}", bases.len());
+    println!("{:?}", scalars.len());
     (bases.len() == scalars.len())
       .then(|| Self::msm_unchecked(bases, scalars))
       .ok_or_else(|| bases.len().min(scalars.len()))

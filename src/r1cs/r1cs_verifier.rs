@@ -353,6 +353,7 @@ impl BulletReductionProof {
     let Gamma_hat = G1Projective::msm_circuit(bases, scalars.as_ref(), cs.clone()).unwrap();
 
     Ok((G_hat, Gamma_hat, a_hat))
+
   }
 
 }
@@ -465,6 +466,8 @@ mod tests {
     
     let l_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 5];
     let r_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 5];
+
+    let g_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 32];
     
     let proof = BulletReductionProof {
         L_vec: l_vec,
@@ -473,7 +476,13 @@ mod tests {
 
     let mut verifier_transcript = Transcript::new(b"example");
     
-    let _ = proof.verify(cs_ref.clone(), &mut verifier_transcript, 32, &[], &G1Projective::rand(&mut ark_std::test_rng()), &[]);
+    let _ = proof.verify(
+      cs_ref.clone(),
+      &mut verifier_transcript,
+      32,
+      &[Fr::rand(&mut ark_std::test_rng()); 32],
+      &G1Projective::rand(&mut ark_std::test_rng()),
+      g_vec.as_slice(), );
     
     println!("Number of constraints: {}", cs_ref.num_constraints());
     
