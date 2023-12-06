@@ -320,9 +320,10 @@ fn log2_circuit(
   let x_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(x as u64)))?;
   let zero_var = FpVar::new_constant(cs.clone(), Fr::zero())?;
 
-  let power_of_two = is_power_of_two(x_witness).unwrap();
+  let power_of_two = is_power_of_two(x_witness.clone()).unwrap();
 
   if x == 0 {
+      let _ = x_witness.enforce_equal(&zero_var);
       Ok(0 as u32)
   } else if x.is_power_of_two() {
       let _ = power_of_two.enforce_equal(&Boolean::constant(true));
@@ -388,7 +389,7 @@ fn msm_bigint_circuit(
     ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
   };
 
-  let c_witness = FpVar::new_constant(cs.clone(), Fr::from(c as u64)).unwrap();
+  let _c_witness = FpVar::new_constant(cs.clone(), Fr::from(c as u64)).unwrap();
 
   let mut max_num_bits = 1usize;
   let mut _max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
@@ -425,9 +426,11 @@ fn msm_bigint_circuit(
   let _num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_bits as u64))).unwrap();
 
   let one = Fr::one().into_bigint();
-  let one_witness = FpVar::new_constant(cs.clone(), Fr::one()).unwrap();
+  let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
+  let left_shift_one_witness = left_shift(one_witness.clone(), c as u64, cs.clone());
 
   let window_starts = (0..num_bits).step_by(c);
+  
 
   let window_sums: Vec<_> = window_starts
     .map(|w_start| {
@@ -443,14 +446,14 @@ fn msm_bigint_circuit(
       // This clone is cheap, because the iterator contains just a
       // pointer and an index into the original vectors.
       scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
-        let mut scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+        let mut _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
         
         let base_x_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.x)).unwrap();
         let base_y_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.y)).unwrap();
         let base_z_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.z)).unwrap();
 
         if scalar == one {
-          scalar_witness.enforce_equal(&one_witness).unwrap();
+          _scalar_witness.enforce_equal(&one_witness).unwrap();
           // We only process unit scalars once in the first window.
           if w_start == 0 {
             w_start_witness.enforce_equal(&zero_witness).unwrap();
@@ -460,27 +463,26 @@ fn msm_bigint_circuit(
             res_z += base_z_witness;
           }
         } else {
-          scalar_witness.enforce_not_equal(&one_witness).unwrap();
+          _scalar_witness.enforce_not_equal(&one_witness).unwrap();
 
           let mut scalar = scalar;
-          scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+          _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
 
           // We right-shift by w_start, thus getting rid of the lower bits.
           scalar = divn_circuit(scalar, w_start as u32, cs.clone());
-          scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+          _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
  
-          let left_shift_one_witness = left_shift(one_witness.clone(), c as u64, cs.clone());
           let scalar_witness_ref = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.as_ref()[0]))).unwrap();
 
           let scalar = scalar.as_ref()[0] % (1 << c);
-          scalar_witness = modulo(scalar_witness_ref, left_shift_one_witness);
+          _scalar_witness = modulo(scalar_witness_ref, left_shift_one_witness.clone());
        
 
           // If the scalar is non-zero, we update the corresponding
           // bucket.
           // (Recall that `buckets` doesn't have a zero bucket.)
           if scalar != 0 {
-            scalar_witness.enforce_not_equal(&zero_witness).unwrap();
+            _scalar_witness.enforce_not_equal(&zero_witness).unwrap();
             buckets[(scalar - 1) as usize] += base;
             buckets_witnesses[(scalar - 1) as usize].0 += base_x_witness;
             buckets_witnesses[(scalar - 1) as usize].1 += base_y_witness;
@@ -605,7 +607,7 @@ fn divn_circuit(
     let _ = sixty_four.enforce_cmp(&n_witness, core::cmp::Ordering::Less, true);
 
     let mut t = 0;
-    let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
+    let mut _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
     let mut _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - 0 - 1]))).unwrap();
      
     for i in 0..num_limbs {
@@ -614,8 +616,8 @@ fn divn_circuit(
         core::mem::swap(&mut t, &mut scalar.0[num_limbs - i - 1]);
 
         //TODO: this may need to be a bit decomp. Or an input into the circuit.
-        t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - i - 1]))).unwrap();
-        _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(t_witness.value().unwrap())).unwrap()
+        _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - i - 1]))).unwrap();
+        _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(_t_witness.value().unwrap())).unwrap()
     }
     n_witness = n_witness.clone() - sixty_four.clone();
     n -= 64;
@@ -663,7 +665,7 @@ fn modulo(num: FpVar<Fr>, mod_value: FpVar<Fr>) -> FpVar<Fr> {
       unreachable!()
   };
 
-  let mut num_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&num_var).expect("Failed to convert num to bits");
+  let num_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&num_var).expect("Failed to convert num to bits");
   let mod_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&mod_var).expect("Failed to convert mod to bits");
 
   let m = mod_bits.len();
@@ -674,6 +676,11 @@ fn modulo(num: FpVar<Fr>, mod_value: FpVar<Fr>) -> FpVar<Fr> {
   let mut q = vec![Boolean::<Fr>::constant(false); n - m + 1];
 
   for i in (0..n - m + 1).rev() {
+
+    //TODO: may need range checks for this.
+    if i + m >= 254 {
+      break;
+    }
       
     let mut t = Boolean::<Fr>::constant(true);
     for j in (0..m).rev() {
@@ -710,11 +717,11 @@ fn is_power_of_two(x: FpVar<Fr>) -> Result<Boolean<Fr>, SynthesisError> {
   let mut found_one = false;
   for (i, bit) in x_bits.into_iter().enumerate() {
       if i == 0 {
-          // First bit must be set
-          let _ = bit.enforce_equal(&Boolean::TRUE);  
+        // First bit must be set
+        let _ = bit.enforce_equal(&Boolean::TRUE);  
       } else if found_one {
-          // Subsequent bits must be false
-          let _ = bit.enforce_equal(&Boolean::FALSE);
+        // Subsequent bits must be false
+        let _ = bit.enforce_equal(&Boolean::FALSE);
       } else if bit.value().unwrap_or(false) {
           found_one = true; 
       }
