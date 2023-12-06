@@ -5,13 +5,14 @@ use ark_std::{borrow::Borrow, iterable::Iterable, vec::Vec};
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 use ark_r1cs_std::{
   alloc::AllocVar,
-  fields::fp::FpVar,
+  fields::fp::{FpVar, AllocatedFp},
   fields::nonnative::NonNativeFieldVar,
   prelude::{EqGadget, FieldVar},
+  bits::boolean::Boolean,
+  prelude::*,
 };
 
 use ark_ec::{CurveGroup, ScalarMul};
-use ark_r1cs_std::boolean::Boolean;
 
 use ark_ec::Group;
 use ark_bn254::Fr as Fr;
@@ -319,6 +320,7 @@ fn log2_circuit(
   let x_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(x as u64)))?;
   let zero_var = FpVar::new_constant(cs.clone(), Fr::zero())?;
 
+  //HERE
   let power_of_two = Boolean::new_witness(
     cs.clone(), 
     || Ok(x.is_power_of_two())
@@ -648,28 +650,23 @@ fn divn_circuit(
 
     #[allow(unused)]
     for i in 0..num_limbs {
+
         let a = &mut scalar.0[num_limbs - i - 1];
         let mut a_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(*a as u64))).unwrap();
-
         let two_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2 as u32))).unwrap();
-        let mut cur_power = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
-        
-        for _ in 0..(64 - n) {
-          cur_power = cur_power.clone() * two_witness.clone();
-        }
 
         let t2 = *a << (64 - n);
-        let t2_witness = a_witness.clone() * cur_power.clone();
-        let t2_end_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t2 as u64))).unwrap();
-        t2_witness.enforce_equal(&t2_end_witness);
+        let t2_witness = left_shift(a_witness.clone(), (64 - n) as u64, cs.clone());
 
         let mut cur_power_2 = a_witness.clone();
         
+        //HERE
         *a >>= n;
         for _ in 0..n {
           cur_power_2 = cur_power_2.clone() + cur_power_2.clone();
         }
 
+        //HERE
         *a |= t;
         let temp = a_witness.clone() + t_witness.clone();
         let mut out = a_witness.clone() * temp.clone();
@@ -683,6 +680,32 @@ fn divn_circuit(
     }
   }
   scalar
+}
+
+fn left_shift(a: FpVar<Fr>, shift: u64, cs: ConstraintSystemRef<Fr>) -> FpVar<Fr> {
+
+  // Decompose `a` into bits
+  let a_var = if let FpVar::Var(a_var) = a {
+    a_var
+  } else {
+      unreachable!()
+  };
+  let a_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&a_var).unwrap();
+    
+  let mut result_bits = Vec::new();
+
+  // Shift the bits  
+  for (i, bit) in a_bits.into_iter().enumerate() {
+      if i >= shift as usize {
+           result_bits.push(bit)
+      } else {
+           result_bits.push(Boolean::constant(false))
+      }
+  }
+
+  let result_var = Boolean::le_bits_to_fp_var(&result_bits).unwrap();
+
+  result_var
 }
 
 // From: https://github.com/arkworks-rs/gemini/blob/main/src/kzg/msm/variable_base.rs#L20
