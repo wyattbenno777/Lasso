@@ -11,7 +11,6 @@ use ark_r1cs_std::{
   bits::boolean::Boolean,
   prelude::*,
 };
-use ark_r1cs_std::uint64::UInt64;
 
 use ark_ec::{CurveGroup, ScalarMul};
 
@@ -321,20 +320,14 @@ fn log2_circuit(
   let x_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(x as u64)))?;
   let zero_var = FpVar::new_constant(cs.clone(), Fr::zero())?;
 
-  //HERE
-  let power_of_two = Boolean::new_witness(
-    cs.clone(), 
-    || Ok(x.is_power_of_two())
-  )?;
+  let power_of_two = is_power_of_two(x_witness).unwrap();
 
   if x == 0 {
-      let _ = x_witness.enforce_equal(&zero_var);
       Ok(0 as u32)
   } else if x.is_power_of_two() {
       let _ = power_of_two.enforce_equal(&Boolean::constant(true));
       Ok(1usize.leading_zeros() - x.leading_zeros())
   } else {
-      let _ = x_witness.enforce_not_equal(&zero_var);
       let _ = power_of_two.enforce_not_equal(&Boolean::constant(true));
       Ok(0usize.leading_zeros() - x.leading_zeros())
   }
@@ -661,7 +654,6 @@ fn divn_circuit(
         *a >>= n;
         a_witness = right_shift(a_witness.clone(), n as u64, cs.clone());
 
-        //HERE
         *a |= t;
         a_witness = bitwise_or_assign(a_witness.clone(), t_witness.clone());
 
@@ -672,24 +664,56 @@ fn divn_circuit(
   scalar
 }
 
+/*
+  1        = 2^0 = 1  
+  10       = 2^1 = 2
+  100      = 2^2 = 4 
+  1000     = 2^3 = 8
+*/
+fn is_power_of_two(x: FpVar<Fr>) -> Result<Boolean<Fr>, SynthesisError> {
+
+  let x_var = if let FpVar::Var(x_var) = x {
+      x_var
+  } else {
+      unreachable!()
+  };
+
+  let x_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&x_var).unwrap();
+
+  let mut found_one = false;
+  for (i, bit) in x_bits.into_iter().enumerate() {
+      if i == 0 {
+          // First bit must be set
+          let _ = bit.enforce_equal(&Boolean::TRUE);  
+      } else if found_one {
+          // Subsequent bits must be false
+          let _ = bit.enforce_equal(&Boolean::FALSE);
+      } else if bit.value().unwrap_or(false) {
+          found_one = true; 
+      }
+  }
+
+  Ok(Boolean::constant(found_one))
+}
+
 fn bitwise_or_assign(
   a: FpVar<Fr>, 
   t: FpVar<Fr>,
 ) -> FpVar<Fr> {
 
-    // Decompose `a` into bits
-    let a_var = if let FpVar::Var(a_var) = a {
-      a_var
-    } else {
-        unreachable!()
-    };
+  // Decompose `a` into bits
+  let a_var = if let FpVar::Var(a_var) = a {
+    a_var
+  } else {
+      unreachable!()
+  };
 
-    // Decompose `t` into bits
-    let t_var = if let FpVar::Var(t_var) = t {
-      t_var
-    } else {
-        unreachable!()
-    };
+  // Decompose `t` into bits
+  let t_var = if let FpVar::Var(t_var) = t {
+    t_var
+  } else {
+      unreachable!()
+  };
 
   // Decompose a and t into bits
   let a_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&a_var).unwrap();
