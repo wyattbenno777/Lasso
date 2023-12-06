@@ -388,7 +388,7 @@ fn msm_bigint_circuit(
     ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
   };
 
-  let _c_witness = FpVar::new_constant(cs.clone(), Fr::from(c as u64)).unwrap();
+  let c_witness = FpVar::new_constant(cs.clone(), Fr::from(c as u64)).unwrap();
 
   let mut max_num_bits = 1usize;
   let mut _max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
@@ -460,37 +460,21 @@ fn msm_bigint_circuit(
             res_z += base_z_witness;
           }
         } else {
-          //scalar_witness.enforce_not_equal(&one_witness).unwrap();
+          scalar_witness.enforce_not_equal(&one_witness).unwrap();
+
           let mut scalar = scalar;
           scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
 
           // We right-shift by w_start, thus getting rid of the lower bits.
           scalar = divn_circuit(scalar, w_start as u32, cs.clone());
-
-          // We mod the remaining bits by 2^{window size}, thus taking `c` bits.
-          let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1 as u32))).unwrap();
-          let two_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2 as u32))).unwrap();
-          let mut cur_power = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
-          
-          /*for _ in 0..c {
-            cur_power = cur_power.clone() * two_witness.clone();
-          }*/
-  
-          let _one_end_witness = one_witness.clone() * cur_power.clone();
-          let temp_scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.as_ref()[0]))).unwrap();
-          let temp_c_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1 << c))).unwrap();
-
-          //TODO mod gadget.
-          /*let mut temp = 0;
-          while temp < scalar.as_ref()[0] {
-            temp = temp + (1 << c);
-            temp_scalar_witness = temp_scalar_witness.clone() + temp_c_witness.clone();
-          }
-          temp_scalar_witness = temp_scalar_witness.clone() - scalar_witness.clone();*/
-          
-          let scalar = scalar.as_ref()[0] % (1 << c);
           scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
-          //let _ = temp_scalar_witness.enforce_equal(&scalar_witness);
+ 
+          let left_shift_one_witness = left_shift(one_witness.clone(), c as u64, cs.clone());
+          let scalar_witness_ref = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.as_ref()[0]))).unwrap();
+
+          let scalar = scalar.as_ref()[0] % (1 << c);
+          scalar_witness = modulo(scalar_witness_ref, left_shift_one_witness);
+       
 
           // If the scalar is non-zero, we update the corresponding
           // bucket.
@@ -621,16 +605,17 @@ fn divn_circuit(
     let _ = sixty_four.enforce_cmp(&n_witness, core::cmp::Ordering::Less, true);
 
     let mut t = 0;
-    let mut _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
+    let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
     let mut _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - 0 - 1]))).unwrap();
+     
     for i in 0..num_limbs {
         let _i_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(i as u64))).unwrap();
 
         core::mem::swap(&mut t, &mut scalar.0[num_limbs - i - 1]);
 
         //TODO: this may need to be a bit decomp. Or an input into the circuit.
-        _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - i - 1]))).unwrap();
-        _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t))).unwrap()
+        t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - i - 1]))).unwrap();
+        _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(t_witness.value().unwrap())).unwrap()
     }
     n_witness = n_witness.clone() - sixty_four.clone();
     n -= 64;
@@ -662,6 +647,48 @@ fn divn_circuit(
     }
   }
   scalar
+}
+
+fn modulo(num: FpVar<Fr>, mod_value: FpVar<Fr>) -> FpVar<Fr> {
+
+  let num_var = if let FpVar::Var(num_var) = num {
+    num_var
+  } else {
+      unreachable!()
+  };
+
+  let mod_var = if let FpVar::Var(mod_var) = mod_value {
+    mod_var
+  } else {
+      unreachable!()
+  };
+
+  let mut num_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&num_var).expect("Failed to convert num to bits");
+  let mod_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&mod_var).expect("Failed to convert mod to bits");
+
+  let m = mod_bits.len();
+  let n = num_bits.len();
+
+  assert!(n >= m);
+  
+  let mut q = vec![Boolean::<Fr>::constant(false); n - m + 1];
+
+  for i in (0..n - m + 1).rev() {
+      
+    let mut t = Boolean::<Fr>::constant(true);
+    for j in (0..m).rev() {
+        let t_next = q[i].clone().xor(&mod_bits[j]);
+        t = t.and(&num_bits[i + j].xor(&t_next.expect("Failed to xor t_next")).unwrap()).expect("Failed to and");
+    }
+
+    q[i] = t.clone().xor(&num_bits[i + m]).expect("Failed to xor t and num_bits");
+      
+  }
+
+  let r = num_bits[0..m].to_vec();
+  
+  Boolean::le_bits_to_fp_var(&r).expect("Failed to convert bits to FpVar")
+  
 }
 
 /*
