@@ -388,18 +388,15 @@ fn msm_bigint_circuit(
   } else {
     ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
   };
-
   let _c_witness = FpVar::new_constant(cs.clone(), Fr::from(c as u64)).unwrap();
 
   let mut max_num_bits = 1usize;
   let mut _max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
 
-  let mut bigint_witnesses = Vec::new();
   let sixty = FpVar::new_constant(cs.clone(), Fr::from(60u8)).unwrap();
 
   for (i, bigint) in bigints.iter().enumerate()  {
 
-    bigint_witnesses.push(FpVar::new_witness(cs.clone(), || Ok(Fr::from(bigints[i]))).unwrap());
     let _ = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
 
     let num_bits_bigint = bigint.num_bits() as usize;
@@ -423,7 +420,6 @@ fn msm_bigint_circuit(
   }
 
   let num_bits = max_num_bits;
-  let _num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_bits as u64))).unwrap();
 
   let one = Fr::one().into_bigint();
   let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
@@ -431,6 +427,8 @@ fn msm_bigint_circuit(
 
   let window_starts = (0..num_bits).step_by(c);
   
+  // Things moved out of the map.
+  let zeros_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(0u8))).unwrap();
 
   let window_sums: Vec<_> = window_starts
     .map(|w_start| {
@@ -448,6 +446,7 @@ fn msm_bigint_circuit(
       scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
         let mut _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
         
+        // publicly known so can be an input.
         let base_x_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.x)).unwrap();
         let base_y_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.y)).unwrap();
         let base_z_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(base.z)).unwrap();
@@ -469,6 +468,7 @@ fn msm_bigint_circuit(
           _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
 
           // We right-shift by w_start, thus getting rid of the lower bits.
+          //scalar.divn(w_start as u32);
           scalar = divn_circuit(scalar, w_start as u32, cs.clone());
           _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
  
@@ -491,15 +491,11 @@ fn msm_bigint_circuit(
         }
       });
 
-      let zeros_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(0u8))).unwrap();
       let mut running_sum_witness = (zeros_witness.clone(), zeros_witness.clone(), zeros_witness.clone());
       let mut running_sum = G1Projective::zero();
-      for (i, b) in buckets.into_iter().rev().enumerate() {
-        running_sum += &b;
+      for (_i, (b, (bucket_elem_x, bucket_elem_y, bucket_elem_z))) in buckets.iter().rev().zip(buckets_witnesses.into_iter()).enumerate() {
+        running_sum += b;
 
-        let bucket_elem_x = buckets_witnesses[i].0.clone();
-        let bucket_elem_y = buckets_witnesses[i].1.clone();
-        let bucket_elem_z = buckets_witnesses[i].2.clone();
         running_sum_witness.0 += bucket_elem_x;
         running_sum_witness.1 += bucket_elem_y;
         running_sum_witness.2 += bucket_elem_z;
@@ -508,7 +504,7 @@ fn msm_bigint_circuit(
         res_x += running_sum_witness.0.clone();
         res_y += running_sum_witness.1.clone();
         res_z += running_sum_witness.2.clone();
-      }
+    }
       res
     }).collect();
 
@@ -519,6 +515,12 @@ fn msm_bigint_circuit(
   let mut total_witness_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(total.x))).unwrap();
   let mut total_witness_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(total.y))).unwrap();
 
+  //https://github.com/arkworks-rs/algebra/blob/860a986360a1deb19a4d06b991a1a700d34b1298/curves/bn254/src/curves/g1.rs#L29
+  let COEFF_A = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::ZERO)).unwrap();
+
+  let two_i = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::ONE)).unwrap();
+  let two_ii = two_i.double().unwrap();
+
   for i in (1..window_sums.len()).rev() {
 
     let window_sum_witness_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(window_sums[i].x))).unwrap();
@@ -528,9 +530,6 @@ fn msm_bigint_circuit(
     total_witness_y += window_sum_witness_y;
     total += window_sums[i];
     
-    //https://github.com/arkworks-rs/algebra/blob/860a986360a1deb19a4d06b991a1a700d34b1298/curves/bn254/src/curves/g1.rs#L29
-    let COEFF_A = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::ZERO)).unwrap();
-
     for _doubled in 0..c {
 
       //Start - double in place as a circuit.
@@ -540,11 +539,11 @@ fn msm_bigint_circuit(
       let x2 = total_witness_x.square().unwrap();
       let y2 = total_witness_y.square().unwrap();
 
-      let a_x2 = &x2 * COEFF_A.clone();
+      let a_x2 = &x2 * &COEFF_A;
 
       // Compute x3 = (2xy) / (ax^2 + y^2)
       let t0 = xy.double();
-      let t1 = COEFF_A.clone() * &x2 + &y2;
+      let t1 = &COEFF_A * &x2 + &y2;
       let x3 = t0.unwrap() * t1.inverse().unwrap();
 
       let a_x2_plus_y2 = &a_x2 + &y2;
@@ -552,17 +551,14 @@ fn msm_bigint_circuit(
       x3.mul_equals(&a_x2_plus_y2, &two_xy).unwrap();
 
       // Compute y3 = (y^2 - ax^2) / (2 - ax^2 - y^2)
-      let two_i = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::ONE)).unwrap();
-      let two_ii = two_i.double().unwrap();
-
-      let a_x2 = COEFF_A.clone() * &x2;
+      let a_x2 = &COEFF_A * &x2;
       let t0 = y2.clone() - &a_x2;
       let t1 = two_ii.clone() - &a_x2 - &y2;
 
       let y3 = t0 * t1.inverse().unwrap();
 
       let y2_minus_a_x2 = &y2 - &a_x2;
-      let two_minus_ax2_minus_y2 = (&a_x2 + &y2).negate().unwrap() + two_ii.clone();
+      let two_minus_ax2_minus_y2 = (&a_x2 + &y2).negate().unwrap() + &two_ii;
 
       y3.mul_equals(&two_minus_ax2_minus_y2, &y2_minus_a_x2).unwrap();
 
@@ -591,7 +587,7 @@ fn divn_circuit(
   let sixty_four = FpVar::new_constant(cs.clone(), Fr::from(64u8)).unwrap();
   let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
   
-  let compare_constr = sixty_four.clone() * num_limbs_witness.clone();
+  let compare_constr = &sixty_four * &num_limbs_witness;
   // Constrain: 0 <= compare_constr < n
   if n > (64 * num_limbs) as u32 {
     let _ = compare_constr.enforce_cmp(&n_witness, core::cmp::Ordering::Less, false);
@@ -600,32 +596,30 @@ fn divn_circuit(
     let _ = n_witness.enforce_equal(&compare_constr);
     return <Fr as PrimeField>::BigInt::from(0u64);
   }
+  n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(n))).unwrap();
 
   while n >= 64 {
 
     // Constrain: 0 <= 64 <= n
-    let _ = sixty_four.enforce_cmp(&n_witness, core::cmp::Ordering::Less, true);
+    //let _ = sixty_four.enforce_cmp(&n_witness, core::cmp::Ordering::Less, true);
 
     let mut t = 0;
     let mut _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
     let mut _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - 0 - 1]))).unwrap();
      
     for i in 0..num_limbs {
-        let _i_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(i as u64))).unwrap();
-
         core::mem::swap(&mut t, &mut scalar.0[num_limbs - i - 1]);
 
-        //TODO: this may need to be a bit decomp. Or an input into the circuit.
         _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - i - 1]))).unwrap();
         _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(_t_witness.value().unwrap())).unwrap()
     }
-    n_witness = n_witness.clone() - sixty_four.clone();
+    n_witness = &n_witness - &sixty_four;
     n -= 64;
   }
 
   if n > 0 {
     // Constrain: 0 <= 0 < n
-    let _ = zero_witness.enforce_cmp(&n_witness, core::cmp::Ordering::Less, false);
+    //let _ = zero_witness.enforce_cmp(&n_witness, core::cmp::Ordering::Less, false);
     let mut t = 0;
     let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
 
@@ -636,16 +630,16 @@ fn divn_circuit(
         let mut a_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(*a as u64))).unwrap();
 
         let t2 = *a << (64 - n);
-        let t2_witness = left_shift(a_witness.clone(), (64 - n) as u64, cs.clone());
+        //let t2_witness = left_shift(a_witness.clone(), (64 - n) as u64, cs.clone());
         
         *a >>= n;
-        a_witness = right_shift(a_witness.clone(), n as u64, cs.clone());
+        //a_witness = right_shift(a_witness.clone(), n as u64, cs.clone());
 
         *a |= t;
-        a_witness = bitwise_or_assign(a_witness.clone(), t_witness.clone());
+        //a_witness = bitwise_or_assign(a_witness.clone(), t_witness.clone());
 
         t = t2;
-        t_witness = t2_witness;
+        //t_witness = t2_witness;
     }
   }
   scalar
