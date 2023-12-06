@@ -11,6 +11,7 @@ use ark_r1cs_std::{
   bits::boolean::Boolean,
   prelude::*,
 };
+use ark_r1cs_std::uint64::UInt64;
 
 use ark_ec::{CurveGroup, ScalarMul};
 
@@ -441,7 +442,7 @@ fn msm_bigint_circuit(
       let mut res_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.x)).unwrap();
       let mut res_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.y)).unwrap();
       let mut res_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.z)).unwrap();
-      //ENDED_HERE
+
       let w_start_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(w_start as u64))).unwrap();
       // We don't need the "zero" bucket, so we only have 2^c - 1 buckets.
       let mut buckets = vec![zero; (1 << c) - 1];
@@ -459,7 +460,7 @@ fn msm_bigint_circuit(
           scalar_witness.enforce_equal(&one_witness).unwrap();
           // We only process unit scalars once in the first window.
           if w_start == 0 {
-            //w_start_witness.enforce_equal(&zero_witness).unwrap();
+            w_start_witness.enforce_equal(&zero_witness).unwrap();
             res += base;
             res_x += base_x_witness;
             res_y += base_y_witness;
@@ -483,7 +484,7 @@ fn msm_bigint_circuit(
           }*/
   
           let _one_end_witness = one_witness.clone() * cur_power.clone();
-          let mut temp_scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.as_ref()[0]))).unwrap();
+          let temp_scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.as_ref()[0]))).unwrap();
           let temp_c_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1 << c))).unwrap();
 
           //TODO mod gadget.
@@ -653,18 +654,12 @@ fn divn_circuit(
 
         let a = &mut scalar.0[num_limbs - i - 1];
         let mut a_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(*a as u64))).unwrap();
-        let two_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2 as u32))).unwrap();
 
         let t2 = *a << (64 - n);
         let t2_witness = left_shift(a_witness.clone(), (64 - n) as u64, cs.clone());
-
-        let mut cur_power_2 = a_witness.clone();
         
-        //HERE
         *a >>= n;
-        for _ in 0..n {
-          cur_power_2 = cur_power_2.clone() + cur_power_2.clone();
-        }
+        a_witness = right_shift(a_witness.clone(), n as u64, cs.clone());
 
         //HERE
         *a |= t;
@@ -682,6 +677,34 @@ fn divn_circuit(
   scalar
 }
 
+fn right_shift(a: FpVar<Fr>, shift: u64, cs: ConstraintSystemRef<Fr>) -> FpVar<Fr> {
+
+  // Decompose `a` into bits
+  let a_var = if let FpVar::Var(a_var) = a {
+    a_var
+  } else {
+      unreachable!()
+  };
+
+  let a_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&a_var).unwrap();
+    
+  let shift_const = FpVar::new_constant(cs.clone(), Fr::from(a_bits.len() as u64 - shift as u64)).unwrap();
+  let mut result_bits = vec![Boolean::FALSE; a_bits.len()];
+
+  for (i, bit) in a_bits.clone().into_iter().enumerate() {
+
+      let index_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(i as u64))).unwrap();
+      let index_in_range = index_var.is_eq(&shift_const).unwrap();
+
+      result_bits[i] = index_in_range
+            .select(&bit, &Boolean::FALSE).unwrap();
+  }
+
+  let result_var = Boolean::le_bits_to_fp_var(&result_bits[..a_bits.len() - shift as usize]).unwrap();
+
+  result_var
+}
+
 fn left_shift(a: FpVar<Fr>, shift: u64, cs: ConstraintSystemRef<Fr>) -> FpVar<Fr> {
 
   // Decompose `a` into bits
@@ -693,14 +716,18 @@ fn left_shift(a: FpVar<Fr>, shift: u64, cs: ConstraintSystemRef<Fr>) -> FpVar<Fr
   let a_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&a_var).unwrap();
     
   let mut result_bits = Vec::new();
+  let shift_const = FpVar::new_constant(cs.clone(), Fr::from(shift as u64)).unwrap();
 
   // Shift the bits  
   for (i, bit) in a_bits.into_iter().enumerate() {
-      if i >= shift as usize {
-           result_bits.push(bit)
-      } else {
-           result_bits.push(Boolean::constant(false))
-      }
+        // Check if index >= shift
+        let index_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(i as u64))).unwrap();
+        let index_in_range = index_var.is_eq(&shift_const).unwrap();
+        
+        // Append the bit or false based on range check
+        let new_bit = index_in_range.select(&bit, &Boolean::FALSE).unwrap();
+
+        result_bits.push(new_bit);
   }
 
   let result_var = Boolean::le_bits_to_fp_var(&result_bits).unwrap();
