@@ -663,18 +663,47 @@ fn divn_circuit(
 
         //HERE
         *a |= t;
-        let temp = a_witness.clone() + t_witness.clone();
-        let mut out = a_witness.clone() * temp.clone();
-        out = out.clone() + t_witness.clone();
-
-        let a_end_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(*a as u64))).unwrap();
-        out.enforce_equal(&a_end_witness);
+        a_witness = bitwise_or_assign(a_witness.clone(), t_witness.clone());
 
         t = t2;
         t_witness = t2_witness;
     }
   }
   scalar
+}
+
+fn bitwise_or_assign(
+  a: FpVar<Fr>, 
+  t: FpVar<Fr>,
+) -> FpVar<Fr> {
+
+    // Decompose `a` into bits
+    let a_var = if let FpVar::Var(a_var) = a {
+      a_var
+    } else {
+        unreachable!()
+    };
+
+    // Decompose `t` into bits
+    let t_var = if let FpVar::Var(t_var) = t {
+      t_var
+    } else {
+        unreachable!()
+    };
+
+  // Decompose a and t into bits
+  let a_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&a_var).unwrap();
+  let t_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&t_var).unwrap();
+
+  assert_eq!(a_bits.len(), t_bits.len());
+
+  // Build result bits with bitwise OR
+  let mut result_bits = vec![Boolean::FALSE; a_bits.len()];
+  for ((a, t), r) in a_bits.iter().zip(t_bits.iter()).zip(result_bits.iter_mut()) {
+      *r = a.or(t).unwrap(); 
+  }
+
+  Boolean::le_bits_to_fp_var(&result_bits).unwrap()
 }
 
 fn right_shift(a: FpVar<Fr>, shift: u64, cs: ConstraintSystemRef<Fr>) -> FpVar<Fr> {
