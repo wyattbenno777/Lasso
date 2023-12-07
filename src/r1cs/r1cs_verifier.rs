@@ -11,8 +11,9 @@ use ark_ff::{prelude::*, PrimeField};
 use ark_r1cs_std::{
   alloc::{AllocVar, AllocationMode},
   fields::nonnative::NonNativeFieldVar,
-  fields::fp::FpVar,
+  fields::fp::{FpVar, AllocatedFp},
   prelude::{EqGadget, FieldVar},
+  prelude::*,
 };
 use ark_relations::r1cs::{ConstraintSystemRef, Namespace, SynthesisError};
 use ark_serialize::*;
@@ -25,11 +26,15 @@ use ark_bn254::Fr as Fr;
 use ark_bn254::Fq as Fq;
 use ark_bn254::G1Projective as G1Projective;
 
+use std::ops::MulAssign;
+use ark_r1cs_std::ToConstraintFieldGadget;
+
 use crate::poly::commitments::MultiCommitGens;
 
 #[cfg(not(feature = "ark-msm"))]
 use super::super::msm::VariableBaseMSM;
 use super::gadgets;
+use ark_r1cs_std::groups::CurveVar;
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -330,12 +335,12 @@ impl BulletReductionProof {
     let (u_sq, u_inv_sq, s) = self.verification_scalars(cs.clone(), transcript, n)?;
 
     let G_hat : G1Projective = G1Projective::msm_circuit(G, s.as_ref(), cs.clone()).unwrap();
-    let G_hat_affine = G_hat.into_affine();
-    let x = G_hat_affine.x().unwrap();
-    let y = G_hat_affine.y().unwrap();
+    //let G_hat_affine = G_hat.into_affine();
+    //let x = G_hat_affine.x().unwrap();
+    //let y = G_hat_affine.y().unwrap();
 
-    let _x_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(x)).unwrap();
-    let _y_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(y)).unwrap();
+    //let _x_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(x)).unwrap();
+    //let _y_wiz = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(y)).unwrap();
 
     let a_hat = inner_product_circuit(cs.clone(), a, &s);
     let a_hat_witness = FpVar::new_witness(cs.clone(), || Ok(a_hat))?;
@@ -406,6 +411,28 @@ impl DotProductProofLog {
 
     let Gamma = *Cx + *Cy;
 
+    
+    /*
+    The bases fed to msm are considered public inputs.
+    let Cx_wit = (
+      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cx.x))?,
+      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cx.y))?,
+      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cx.z))?,
+    );
+
+    let Cy_wit = (
+      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cy.x))?,
+      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cy.y))?,
+      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cy.z))?,
+    );
+
+    //Addition works normally as these are all values in the EC base field.
+    let Gamma_x = Cx_wit.0 + Cy_wit.0;
+    let Gamma_y = Cx_wit.1 + Cy_wit.1;
+    let Gamma_z = Cx_wit.2 + Cy_wit.2;
+    */
+
+    // G, G, and Fp elem
     let (g_hat, Gamma_hat, a_hat) =
       self
         .bullet_reduction_proof
@@ -429,6 +456,68 @@ impl DotProductProofLog {
     let delta_s = self.delta;
     let z1_s = &self.z1;
     let z2_s = &self.z2;
+
+    //lhs in a circuit.
+
+    let c_s_wit = FpVar::new_witness(cs.clone(), || Ok(c))?;
+    let c_s_wit_bits = if let FpVar::Var(c_s_wit_bits) = c_s_wit {
+      c_s_wit_bits
+    } else {
+        unreachable!()
+    };
+
+    let c_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&c_s_wit_bits).expect("Failed to convert num to bits");
+
+    let Gamma_hat_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Gamma_hat.x))?;
+    let Gamma_hat_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Gamma_hat.y))?;
+    let Gamma_hat_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Gamma_hat.z))?;
+
+    let mut result_x = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
+    let mut result_y = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
+    let mut result_z = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
+
+    //Make everything into the scalar field.
+    let gamma_x_scalar = &Gamma_hat_x.to_constraint_field()?[0];
+    let gamma_y_scalar = &Gamma_hat_y.to_constraint_field()?[0];
+    let gamma_z_scalar = &Gamma_hat_z.to_constraint_field()?[0];
+
+    //Gamma_hat * c_s = result
+    for bit in c_bits {
+      let _ = result_x.square_in_place();
+      let _ = result_y.square_in_place();
+      let _ = result_z.square_in_place();
+
+      if bit.value().unwrap() {
+        result_x.mul_assign(gamma_x_scalar); 
+        result_y.mul_assign(gamma_y_scalar); 
+        result_z.mul_assign(gamma_z_scalar); 
+      }
+    }
+
+    let beta_s_wit_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(beta_s.x))?;
+    let beta_s_wit_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(beta_s.y))?;
+    let beta_s_wit_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(beta_s.z))?;
+
+    let beta_s_x_scalar = &beta_s_wit_x.to_constraint_field()?[0];
+    let beta_s_y_scalar = &beta_s_wit_y.to_constraint_field()?[0];
+    let beta_s_z_scalar = &beta_s_wit_z.to_constraint_field()?[0];
+
+    //result + beta_s
+    result_x = result_x + beta_s_x_scalar;
+    result_y = result_y + beta_s_y_scalar;
+    result_z = result_z + beta_s_z_scalar;
+
+    // result * a_hat_s
+    let a_hat_s_wit = FpVar::new_witness(cs.clone(), || Ok(a_hat_s))?;
+    let a_hat_s_bits = if let FpVar::Var(a_hat_s_bits) = a_hat_s_wit {
+      a_hat_s_bits
+    } else {
+        unreachable!()
+    };
+
+    let a_hat_s_bits = <AllocatedFp<Fr> as ToBitsGadget<Fr>>::to_bits_le(&a_hat_s_bits).expect("Failed to convert num to bits");
+
+    // end 
 
     let lhs = (Gamma_hat * c_s + beta_s) * a_hat_s + delta_s;
     let rhs = (g_hat + gens.gens_1.G[0] * a_hat_s) * z1_s + gens.gens_1.h * z2_s;
