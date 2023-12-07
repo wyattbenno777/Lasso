@@ -25,8 +25,11 @@ use ark_bn254::Fr as Fr;
 use ark_bn254::Fq as Fq;
 use ark_bn254::G1Projective as G1Projective;
 
+use crate::poly::commitments::MultiCommitGens;
+
 #[cfg(not(feature = "ark-msm"))]
 use super::super::msm::VariableBaseMSM;
+use super::gadgets;
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -200,12 +203,14 @@ impl SumcheckInstanceProof {
 
 }
 
+
 // Used for dot product proof in PCS.
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub struct BulletReductionProof {
   L_vec: Vec<G1Projective>,
   R_vec: Vec<G1Projective>,
 }
+
 
 #[allow(unused)]
 impl BulletReductionProof {
@@ -222,98 +227,97 @@ impl BulletReductionProof {
         Vec<Fr>,
         ), SynthesisError>
     {
-        let lg_n = self.L_vec.len();
-        // 4 billion multiplications should be enough for anyone
-        // and this check prevents overflow in 1<<lg_n below.
-        //assert!(lg_n >= 32, "lg_n must be at least 32, got {lg_n}");
-        assert_eq!((1 << lg_n), n);
+      let lg_n = self.L_vec.len();
+      let lg_n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(lg_n as u64))).unwrap();
+      // 4 billion multiplications should be enough for anyone
+      // and this check prevents overflow in 1<<lg_n below.
+      //assert!(lg_n >= 32, "lg_n must be at least 32, got {lg_n}");
+      assert_eq!((1 << lg_n), n);
+
+      let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
+      //let n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(n as u64))).unwrap();
+      //let left_shift_one_witness = gadgets::left_shift(one_witness.clone(), lg_n as u64, cs.clone());
+
+      //let _ = left_shift_one_witness.enforce_equal(&n_witness).unwrap();*/
 
 
-        // 1. Recompute x_k,...,x_1 based on the proof transcript
-        let mut challenges_witness = Vec::with_capacity(lg_n);
-        for (L, R) in self.L_vec.iter().zip(self.R_vec.iter()) {
-            transcript.append_point( b"L", L);
-            transcript.append_point( b"R", R);
-            let c = transcript.challenge_scalar(b"u");
+      // 1. Recompute x_k,...,x_1 based on the proof transcript
+      let mut challenges_witness = Vec::with_capacity(lg_n);
+      for (L, R) in self.L_vec.iter().zip(self.R_vec.iter()) {
+          transcript.append_point( b"L", L);
+          transcript.append_point( b"R", R);
+          let c = transcript.challenge_scalar(b"u");
 
-            let c_wit = FpVar::new_witness(cs.clone(), || Ok(c))?;
-            challenges_witness.push(c_wit);
-        }
+          let c_witness = FpVar::new_witness(cs.clone(), || Ok(c))?;
+          challenges_witness.push(c_witness);
+      }
 
-        // 2. Compute 1/(u_k...u_1) and 1/u_k, ..., 1/u_1
-        let mut challenges_inv = challenges_witness
-        .iter()
-        .map(|x| x.inverse().unwrap())
-        .collect::<Vec<_>>();
-        let mut all_inv = FpVar::<Fr>::new_witness(cs.clone(), || Ok(Fr::one()))?;
-        for c in challenges_inv.iter() {
-          let new_all_inv = &all_inv * c;
-          new_all_inv.enforce_equal(&all_inv)?;
-          all_inv = new_all_inv;  
-        }
+      // 2. Compute 1/(u_k...u_1) and 1/u_k, ..., 1/u_1
+      let mut challenges_inv = challenges_witness
+      .iter()
+      .map(|x| x.inverse().unwrap())
+      .collect::<Vec<_>>();
+      let mut all_inv = FpVar::<Fr>::new_witness(cs.clone(), || Ok(Fr::one()))?;
+      challenges_inv.iter().for_each(|c| all_inv *= c);
 
-        // 3. Compute u_i^2 and (1/u_i)^2
-        for i in 0..lg_n {
+      // 3. Compute u_i^2 and (1/u_i)^2
+      for i in 0..lg_n {
 
-            let square_result = challenges_witness[i].square();
-            let square_result_inv = challenges_inv[i].square();
+          let square_result = challenges_witness[i].square();
+          let square_result_inv = challenges_inv[i].square();
 
-            if let Ok(square) = square_result {
-              challenges_witness[i] = square; 
-            } else {
-              assert!(false, "issue with square");
-            }
+          if let Ok(square) = square_result {
+            challenges_witness[i] = square; 
+          } else {
+            assert!(false, "issue with square");
+          }
 
-            if let Ok(square) = square_result_inv {
-              challenges_inv[i] = square; 
-            } else {
-              assert!(false, "issue with square");
-            }
+          if let Ok(square) = square_result_inv {
+            challenges_inv[i] = square; 
+          } else {
+            assert!(false, "issue with square");
+          }
 
-        }
-        
-        let challenges_sq = challenges_witness.clone();
-        let challenges_inv_sq = challenges_inv.clone();
+      }
+      
+      let challenges_sq = challenges_witness.clone();
+      let challenges_inv_sq = challenges_inv.clone();
 
-        // 4. Compute s values inductively.
-        let mut s = vec![all_inv];
-        for i in 1..n {
-            let lg_i = (32 - 1 - (i as u32).leading_zeros()) as usize;
-            let k = 1 << lg_i;
-            // The challenges are stored in "creation order" as [u_k,...,u_1],
-            // so u_{lg(i)+1} = is indexed by (lg_n-1) - lg_i
-            let u_lg_i_sq = &challenges_sq[(lg_n - 1) - lg_i];
-            let s_i_k = s[i-k].clone();
-            let result = s_i_k * u_lg_i_sq;
-            s.push(result.clone());
-            
-            let _s_wit = FpVar::new_witness(cs.clone(), || {              
-              Ok(result.value().unwrap())
-            })?;
-        }
+      // 4. Compute s values inductively.
+      let mut s = vec![all_inv];
+      for i in 1..n {
+          let lg_i = (32 - 1 - (i as u32).leading_zeros()) as usize;
+          let _lg_i_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(lg_i as u64))).unwrap();
 
-        let challenges_sq_fin: Vec<Fr> = challenges_witness
-            .iter()
-            .map(|v| v.value().unwrap()) 
-            .collect();
+          let k = 1 << lg_i;
+          let _k_witness = gadgets::left_shift(one_witness.clone(), lg_i as u64, cs.clone());
+          // The challenges are stored in "creation order" as [u_k,...,u_1],
+          // so u_{lg(i)+1} = is indexed by (lg_n-1) - lg_i
+          let u_lg_i_sq = &challenges_sq[(lg_n - 1) - lg_i];
+          let s_i_k = s[i-k].clone();
+          let result = s_i_k * u_lg_i_sq;
+          s.push(result.clone());
+          //The above are FPVar calcs.
+      }
 
-        let challenges_inv_sq_fin: Vec<Fr> = challenges_inv
-            .iter()
-            .map(|v| v.value().unwrap())
-            .collect();
+      let challenges_sq_fin: Vec<Fr> = challenges_witness
+          .iter()
+          .map(|v| v.value().unwrap()) 
+          .collect();
 
-        let s_fin: Vec<Fr> = s
-            .iter()
-            .map(|v| v.value().unwrap())
-            .collect();
+      let challenges_inv_sq_fin: Vec<Fr> = challenges_inv
+          .iter()
+          .map(|v| v.value().unwrap())
+          .collect();
 
-        Ok((challenges_sq_fin, challenges_inv_sq_fin, s_fin))
-    }
+      let s_fin: Vec<Fr> = s
+          .iter()
+          .map(|v| v.value().unwrap())
+          .collect();
 
-  /// This method is for testing that proof generation work,
-  /// but for efficiency the actual protocols would use `verification_scalars`
-  /// method to combine inner product verification with other checks
-  /// in a single multiscalar multiplication.
+      Ok((challenges_sq_fin, challenges_inv_sq_fin, s_fin))
+  }
+
   pub fn verify<T: ProofTranscript<G1Projective>>(
     &self,
     cs: ConstraintSystemRef<Fr>,
@@ -358,6 +362,83 @@ impl BulletReductionProof {
 
 }
 
+pub struct DotProductProofGens {
+  n: usize,
+  pub gens_n: MultiCommitGens<G1Projective>,
+  pub gens_1: MultiCommitGens<G1Projective>,
+}
+
+impl DotProductProofGens {
+  pub fn new(n: usize, label: &[u8]) -> Self {
+    let (gens_n, gens_1) = MultiCommitGens::new(n + 1, label).split_at(n);
+    DotProductProofGens { n, gens_n, gens_1 }
+  }
+}
+
+#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
+pub struct DotProductProofLog {
+  bullet_reduction_proof: BulletReductionProof,
+  delta: G1Projective,
+  beta: G1Projective,
+  z1: Fr,
+  z2: Fr,
+}
+
+impl DotProductProofLog {
+  pub fn verify<T: ProofTranscript<G1Projective>>(
+    &self,
+    cs: ConstraintSystemRef<Fr>,
+    transcript: &mut T,
+    n: usize,
+    gens: &DotProductProofGens,
+    a: &[Fr],
+    Cx: &G1Projective,
+    Cy: &G1Projective,
+  ) -> Result<(), SynthesisError> {
+    assert_eq!(gens.n, n);
+    assert_eq!(a.len(), n);
+
+    transcript.append_point(b"Cx", Cx);
+    transcript.append_point(b"Cy", Cy);
+    for i in 0..a.len() {
+      transcript.append_scalar(b"a", &a[i]);
+    }
+
+    let Gamma = *Cx + *Cy;
+
+    let (g_hat, Gamma_hat, a_hat) =
+      self
+        .bullet_reduction_proof
+        .verify(
+          cs.clone(),
+          transcript,
+          n,
+          a,
+          &Gamma,
+          &gens.gens_n.G
+        )?;
+
+    transcript.append_point(b"delta", &self.delta);
+    transcript.append_point(b"beta", &self.beta);
+
+    let c = transcript.challenge_scalar(b"c");
+
+    let c_s = &c;
+    let beta_s = self.beta;
+    let a_hat_s = &a_hat;
+    let delta_s = self.delta;
+    let z1_s = &self.z1;
+    let z2_s = &self.z2;
+
+    let lhs = (Gamma_hat * c_s + beta_s) * a_hat_s + delta_s;
+    let rhs = (g_hat + gens.gens_1.G[0] * a_hat_s) * z1_s + gens.gens_1.h * z2_s;
+
+    (lhs == rhs)
+      .then_some(())
+      .ok_or(SynthesisError::MissingCS)
+  }
+}
+
 #[allow(unused)]
 pub fn inner_product<F: PrimeField>(a: &[F], b: &[F]) -> F {
   assert!(
@@ -381,7 +462,7 @@ fn inner_product_circuit<F: PrimeField>(
   assert_eq!(a.len(), b.len(), "Vectors must have equal length");
 
   let mut acc = FpVar::new_witness(cs.clone(), || Ok(F::zero())).unwrap();
-  let mut out = F::zero();
+  let mut out = FpVar::new_witness(cs.clone(), || Ok(F::zero())).unwrap();
   for i in 0..a.len() {
       let a_var = FpVar::new_input(cs.clone(), || Ok(a[i])).unwrap();
       let b_var = FpVar::new_input(cs.clone(), || Ok(b[i])).unwrap();
@@ -391,49 +472,7 @@ fn inner_product_circuit<F: PrimeField>(
       out += a[i] * b[i];
   }
 
-  out
-}
-
-#[allow(unused)]
-fn make_digits(a: &impl BigInteger, w: usize, num_bits: usize) -> Vec<i64> {
-  let scalar = a.as_ref();
-  let radix: u64 = 1 << w;
-  let window_mask: u64 = radix - 1;
-
-  let mut carry = 0u64;
-  let num_bits = if num_bits == 0 {
-    a.num_bits() as usize
-  } else {
-    num_bits
-  };
-  let digits_count = (num_bits + w - 1) / w;
-  let mut digits = vec![0i64; digits_count];
-  for (i, digit) in digits.iter_mut().enumerate() {
-    // Construct a buffer of bits of the scalar, starting at `bit_offset`.
-    let bit_offset = i * w;
-    let u64_idx = bit_offset / 64;
-    let bit_idx = bit_offset % 64;
-    // Read the bits from the scalar
-    let bit_buf = if bit_idx < 64 - w || u64_idx == scalar.len() - 1 {
-      // This window's bits are contained in a single u64,
-      // or it's the last u64 anyway.
-      scalar[u64_idx] >> bit_idx
-    } else {
-      // Combine the current u64's bits with the bits from the next u64
-      (scalar[u64_idx] >> bit_idx) | (scalar[1 + u64_idx] << (64 - bit_idx))
-    };
-
-    // Read the actual coefficient value from the window
-    let coef = carry + (bit_buf & window_mask); // coef = [0, 2^r)
-
-    // Recenter coefficients from [0,2^w) to [-2^w/2, 2^w/2)
-    carry = (coef + radix / 2) >> w;
-    *digit = (coef as i64) - (carry << w) as i64;
-  }
-
-  digits[digits_count - 1] += (carry << w) as i64;
-
-  digits
+  out.value().unwrap()
 }
 
 #[allow(unused)]
