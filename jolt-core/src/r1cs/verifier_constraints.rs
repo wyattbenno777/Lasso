@@ -660,5 +660,35 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn sumcheck_constraint_count() -> Result<(), SynthesisError> {
+
+      let cs = ConstraintSystem::<Fr>::new();
+      let cs_ref = ConstraintSystemRef::new(cs);
+
+      let mut transcript = Transcript::new(b"dummy-label");
+
+      let poly_coeffs = vec![FpVar::new_input(cs_ref.clone(), || Ok(Fr::rand(&mut ark_std::test_rng()))).unwrap(); 10]; 
+      let compressed_poly = CompressedUniPolyVar {
+          coeffs_except_linear_term: poly_coeffs
+      };
+
+      let proof = SumcheckInstanceProof {
+          compressed_polys: vec![compressed_poly; 5] 
+      };
+
+      let _ = proof.verify_sumcheck::<G1Projective, Transcript>(
+          cs_ref.clone(), 
+          Fr::rand(&mut ark_std::test_rng()),
+          5, 
+          10,
+          &mut transcript,
+      )?;
+
+      println!("Number of constraints: {}", cs_ref.num_constraints());
+
+      Ok(())
+  }
+
 }
 
