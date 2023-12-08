@@ -2,6 +2,22 @@
 /// known small element sized MSMs.
 use ark_ff::{prelude::*, PrimeField};
 use ark_std::{borrow::Borrow, iterable::Iterable, vec::Vec};
+use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
+use ark_r1cs_std::{
+  alloc::AllocVar,
+  fields::fp::{FpVar, AllocatedFp},
+  fields::nonnative::NonNativeFieldVar,
+  prelude::{EqGadget, FieldVar},
+  bits::boolean::Boolean,
+  prelude::*,
+};
+
+use ark_ec::Group;
+use ark_bn254::Fr as Fr;
+use ark_bn254::Fq as Fq;
+use ark_bn254::G1Projective as G1Projective;
+
+use super::r1cs::gadgets;
 
 use ark_ec::{CurveGroup, ScalarMul};
 
@@ -37,6 +53,33 @@ pub trait VariableBaseMSM: ScalarMul {
         (bases.len() == scalars.len())
             .then(|| Self::msm_unchecked(bases, scalars))
             .ok_or_else(|| bases.len().min(scalars.len()))
+    }
+
+    fn msm_circuit(bases: &[G1Projective], scalars: &[Fr], cs: ConstraintSystemRef<Fr>) -> Result<G1Projective, usize> {
+        (bases.len() == scalars.len())
+          .then(|| Self::msm_unchecked_circuit(bases, scalars, cs))
+          .ok_or_else(|| bases.len().min(scalars.len()))
+    }
+
+    //MSM in R1CS circuit form
+    //Optimizations may be needed per use-case
+    fn msm_unchecked_circuit(
+        bases: &[G1Projective],
+        scalars: &[Fr],
+        cs: ConstraintSystemRef<Fr>,
+    ) -> G1Projective {
+        let bigints = ark_std::cfg_into_iter!(scalars)
+        .map(|s| s.into_bigint())
+        .collect::<Vec<_>>();
+        Self::msm_bigint_circuit(bases, &bigints, cs)
+    }
+
+    fn msm_bigint_circuit(
+        bases: &[G1Projective],
+        bigints: &[<Fr as PrimeField>::BigInt],
+        cs: ConstraintSystemRef<Fr>,
+    ) -> G1Projective {
+        msm_bigint_circuit(bases, bigints, cs)
     }
 
     /// Optimized implementation of multi-scalar multiplication.
@@ -277,6 +320,339 @@ fn msm_bigint<V: VariableBaseMSM>(
                 }
                 total
             })
+}
+
+fn divn_circuit(
+    mut scalar: <Fr as PrimeField>::BigInt,
+    mut n: u32,
+    cs: ConstraintSystemRef<Fr>
+  ) -> <Fr as PrimeField>::BigInt {
+  
+    let num_limbs = (Fr::MODULUS_BIT_SIZE as usize + 63) / 64;
+    let num_limbs_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_limbs as u32))).unwrap();
+  
+    let mut n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(n))).unwrap();
+    let sixty_four = FpVar::new_constant(cs.clone(), Fr::from(64u8)).unwrap();
+    let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
+    
+    let compare_constr = &sixty_four * &num_limbs_witness;
+    // Constrain: 0 <= compare_constr < n
+    if n > (64 * num_limbs) as u32 {
+      let _ = compare_constr.enforce_cmp(&n_witness, core::cmp::Ordering::Less, false);
+      return <Fr as PrimeField>::BigInt::from(0u64);
+    } else if n == (64 * num_limbs) as u32 {
+      let _ = n_witness.enforce_equal(&compare_constr);
+      return <Fr as PrimeField>::BigInt::from(0u64);
+    }
+    n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(n))).unwrap();
+  
+    while n >= 64 {
+  
+      // Constrain: 0 <= 64 <= n
+      //let _ = sixty_four.enforce_cmp(&n_witness, core::cmp::Ordering::Less, true);
+  
+      let mut t = 0;
+      let mut _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
+      let mut _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - 0 - 1]))).unwrap();
+       
+      for i in 0..num_limbs {
+          core::mem::swap(&mut t, &mut scalar.0[num_limbs - i - 1]);
+  
+          _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.0[num_limbs - i - 1]))).unwrap();
+          _scalar_swap_witness = FpVar::new_witness(cs.clone(), || Ok(_t_witness.value().unwrap())).unwrap()
+      }
+      n_witness = &n_witness - &sixty_four;
+      n -= 64;
+    }
+  
+    if n > 0 {
+      // Constrain: 0 <= 0 < n
+      //let _ = zero_witness.enforce_cmp(&n_witness, core::cmp::Ordering::Less, false);
+      let mut t = 0;
+      let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
+  
+      #[allow(unused)]
+      for i in 0..num_limbs {
+  
+          let a = &mut scalar.0[num_limbs - i - 1];
+          let mut a_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(*a as u64))).unwrap();
+  
+          let t2 = *a << (64 - n);
+          //let t2_witness = left_shift(a_witness.clone(), (64 - n) as u64, cs.clone());
+          
+          *a >>= n;
+          //a_witness = right_shift(a_witness.clone(), n as u64, cs.clone());
+  
+          *a |= t;
+          //a_witness = bitwise_or_assign(a_witness.clone(), t_witness.clone());
+  
+          t = t2;
+          //t_witness = t2_witness;
+      }
+    }
+    scalar
+  }
+
+fn log2_circuit(
+    cs: ConstraintSystemRef<Fr>,
+    x: usize
+  ) -> Result<u32, SynthesisError> {
+  
+    let x_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(x as u64)))?;
+    let zero_var = FpVar::new_constant(cs.clone(), Fr::zero())?;
+  
+    let power_of_two = gadgets::is_power_of_two(x_witness.clone()).unwrap();
+  
+    if x == 0 {
+        let _ = x_witness.enforce_equal(&zero_var);
+        Ok(0 as u32)
+    } else if x.is_power_of_two() {
+        let _ = power_of_two.enforce_equal(&Boolean::constant(true));
+        Ok(1usize.leading_zeros() - x.leading_zeros())
+    } else {
+        let _ = power_of_two.enforce_not_equal(&Boolean::constant(true));
+        Ok(0usize.leading_zeros() - x.leading_zeros())
+    }
+}
+  
+fn ln_without_floats_circuit(
+    cs: ConstraintSystemRef<Fr>,
+    a: usize,
+  ) -> Result<usize, SynthesisError> {
+  
+    let _a_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(a as u64)))?;
+    let log2_pre = log2_circuit(cs.clone(), a)?;
+    let log2_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(log2_pre)))?;
+  
+    let sixty_nine = FpVar::new_constant(cs.clone(), Fr::from(69u8))?;
+    let one_hundred = FpVar::new_constant(cs.clone(), Fr::from(100u8))?;
+  
+    let _computation = log2_witness * sixty_nine;
+    let numerator = log2_pre * 69; 
+    let result = numerator / 100; 
+    let result_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(result)))?;
+    let numerator_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(numerator)))?;
+  
+    // Result * denominator = numerator
+    // Enforces numerator / denominator = result
+    let computation_div = result_witness * one_hundred.clone();
+    numerator_witness.enforce_equal(&computation_div)?;
+  
+    Ok(result as usize)
+}
+  
+  /// Enforce this as a circuit.
+fn msm_bigint_circuit(
+    bases: &[G1Projective],
+    bigints: &[<Fr as PrimeField>::BigInt],
+    cs: ConstraintSystemRef<Fr>,
+) -> G1Projective {
+  
+    let size = ark_std::cmp::min(bases.len(), bigints.len());
+    let size_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(size as u64))).unwrap();
+  
+    // These values are witnessed further down before they are used.
+    let scalars = &bigints[..size];
+    let bases = &bases[..size];
+    let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| !s.is_zero());
+    
+    let thirty_two = FpVar::new_constant(cs.clone(), Fr::from(32u8)).unwrap();
+    
+    let zero = G1Projective::zero();
+    let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
+  
+  
+    // Constrain: 0 <= size < 32
+    let c = if size < 32 {
+      let _ = size_witness.enforce_cmp(&thirty_two, core::cmp::Ordering::Less, false);
+      3
+    } else {
+      ln_without_floats_circuit(cs.clone(), size).unwrap() + 2
+    };
+    let _c_witness = FpVar::new_constant(cs.clone(), Fr::from(c as u64)).unwrap();
+  
+    let mut max_num_bits = 1usize;
+    let mut _max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
+  
+    let sixty = FpVar::new_constant(cs.clone(), Fr::from(60u8)).unwrap();
+  
+    for (i, bigint) in bigints.iter().enumerate()  {
+  
+      let _ = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
+  
+      let num_bits_bigint = bigint.num_bits() as usize;
+      let num_bits_bigint_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_bits_bigint as u64))).unwrap();
+  
+      // Constrain: 0 <= max_num_bits < num_bits_bigint
+      if num_bits_bigint > max_num_bits {
+        let _ = _max_num_bits_witness.enforce_cmp(&num_bits_bigint_witness, core::cmp::Ordering::Less, false);
+        max_num_bits = num_bits_bigint;
+      }
+  
+      // Constrain: 0 <= 60 < max_num_bits
+      //https://github.com/arkworks-rs/r1cs-std/blob/61640099e6532d1fb26df290e3db6a38d3c32457/src/fields/fp/cmp.rs#L18
+      if max_num_bits > 60 {
+        let _ = sixty.enforce_cmp(&_max_num_bits_witness, core::cmp::Ordering::Less, false);
+  
+        max_num_bits = Fr::MODULUS_BIT_SIZE as usize;
+        _max_num_bits_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
+        break;
+      }
+    }
+  
+    let num_bits = max_num_bits;
+  
+    let one = Fr::one().into_bigint();
+    let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
+    let left_shift_one_witness = gadgets::left_shift(one_witness.clone(), c as u64, cs.clone());
+  
+    let window_starts = (0..num_bits).step_by(c);
+    
+    // Things moved out of the map.
+    let zeros_witness = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(0u8))).unwrap();
+  
+    let window_sums: Vec<_> = window_starts
+      .map(|w_start| {
+        let mut res = zero;
+        let mut res_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.x)).unwrap();
+        let mut res_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.y)).unwrap();
+        let mut res_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(res.z)).unwrap();
+  
+        let w_start_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(w_start as u64))).unwrap();
+        // We don't need the "zero" bucket, so we only have 2^c - 1 buckets.
+        let mut buckets = vec![zero; (1 << c) - 1];
+        let mut buckets_witnesses = vec![(res_x.clone(), res_y.clone(), res_z.clone()); (1 << c) - 1];
+        // This clone is cheap, because the iterator contains just a
+        // pointer and an index into the original vectors.
+        scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
+          let mut _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+          
+          // MAYBE: publicly known so can be an input.
+          let base_x_witness = NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(base.x)).unwrap();
+          let base_y_witness = NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(base.y)).unwrap();
+          let base_z_witness = NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(base.z)).unwrap();
+  
+          if scalar == one {
+            _scalar_witness.enforce_equal(&one_witness).unwrap();
+            // We only process unit scalars once in the first window.
+            if w_start == 0 {
+              w_start_witness.enforce_equal(&zero_witness).unwrap();
+              res += base;
+              res_x += base_x_witness;
+              res_y += base_y_witness;
+              res_z += base_z_witness;
+            }
+          } else {
+            _scalar_witness.enforce_not_equal(&one_witness).unwrap();
+  
+            let mut scalar = scalar;
+            _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+  
+            // We right-shift by w_start, thus getting rid of the lower bits.
+            //scalar.divn(w_start as u32);
+            scalar = divn_circuit(scalar, w_start as u32, cs.clone());
+            _scalar_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar))).unwrap();
+   
+            let scalar_witness_ref = FpVar::new_witness(cs.clone(), || Ok(Fr::from(scalar.as_ref()[0]))).unwrap();
+  
+            let scalar = scalar.as_ref()[0] % (1 << c);
+            _scalar_witness = gadgets::modulo(scalar_witness_ref, left_shift_one_witness.clone());
+         
+  
+            // If the scalar is non-zero, we update the corresponding
+            // bucket.
+            // (Recall that `buckets` doesn't have a zero bucket.)
+            if scalar != 0 {
+              _scalar_witness.enforce_not_equal(&zero_witness).unwrap();
+              buckets[(scalar - 1) as usize] += base;
+              buckets_witnesses[(scalar - 1) as usize].0 += base_x_witness;
+              buckets_witnesses[(scalar - 1) as usize].1 += base_y_witness;
+              buckets_witnesses[(scalar - 1) as usize].2 += base_z_witness;
+            }
+          }
+        });
+  
+        let mut running_sum_witness = (zeros_witness.clone(), zeros_witness.clone(), zeros_witness.clone());
+        let mut running_sum = G1Projective::zero();
+        for (_i, (b, (bucket_elem_x, bucket_elem_y, bucket_elem_z))) in buckets.iter().rev().zip(buckets_witnesses.into_iter()).enumerate() {
+          running_sum += b;
+  
+          running_sum_witness.0 += bucket_elem_x;
+          running_sum_witness.1 += bucket_elem_y;
+          running_sum_witness.2 += bucket_elem_z;
+  
+          res += &running_sum;
+          res_x += running_sum_witness.0.clone();
+          res_y += running_sum_witness.1.clone();
+          res_z += running_sum_witness.2.clone();
+      }
+        res
+      }).collect();
+  
+    // We store the sum for the lowest window.
+    let lowest = *window_sums.first().unwrap();
+  
+    let mut total = lowest;
+    let mut total_witness_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(total.x))).unwrap();
+    let mut total_witness_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(total.y))).unwrap();
+  
+    //https://github.com/arkworks-rs/algebra/blob/860a986360a1deb19a4d06b991a1a700d34b1298/curves/bn254/src/curves/g1.rs#L29
+    let COEFF_A = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::ZERO)).unwrap();
+  
+    let two_i = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::ONE)).unwrap();
+    let two_ii = two_i.double().unwrap();
+  
+    for i in (1..window_sums.len()).rev() {
+  
+      let window_sum_witness_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(window_sums[i].x))).unwrap();
+      let window_sum_witness_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Fq::from(window_sums[i].y))).unwrap();
+    
+      total_witness_x += window_sum_witness_x;
+      total_witness_y += window_sum_witness_y;
+      total += window_sums[i];
+      
+      for _doubled in 0..c {
+  
+        //Start - double in place as a circuit.
+  
+        // xy
+        let xy = &total_witness_x * &total_witness_y;
+        let x2 = total_witness_x.square().unwrap();
+        let y2 = total_witness_y.square().unwrap();
+  
+        let a_x2 = &x2 * &COEFF_A;
+  
+        // Compute x3 = (2xy) / (ax^2 + y^2)
+        let t0 = xy.double();
+        let t1 = &COEFF_A * &x2 + &y2;
+        let x3 = t0.unwrap() * t1.inverse().unwrap();
+  
+        let a_x2_plus_y2 = &a_x2 + &y2;
+        let two_xy = xy.double().unwrap();
+        x3.mul_equals(&a_x2_plus_y2, &two_xy).unwrap();
+  
+        // Compute y3 = (y^2 - ax^2) / (2 - ax^2 - y^2)
+        let a_x2 = &COEFF_A * &x2;
+        let t0 = y2.clone() - &a_x2;
+        let t1 = two_ii.clone() - &a_x2 - &y2;
+  
+        let y3 = t0 * t1.inverse().unwrap();
+  
+        let y2_minus_a_x2 = &y2 - &a_x2;
+        let two_minus_ax2_minus_y2 = (&a_x2 + &y2).negate().unwrap() + &two_ii;
+  
+        y3.mul_equals(&two_minus_ax2_minus_y2, &y2_minus_a_x2).unwrap();
+  
+        total_witness_x = x3;
+        total_witness_y = y3;
+  
+        // END double in place.
+  
+        total.double_in_place(); 
+      }
+    
+    }
+    return total;
 }
 
 // From: https://github.com/arkworks-rs/gemini/blob/main/src/kzg/msm/variable_base.rs#L20
