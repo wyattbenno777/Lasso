@@ -3,7 +3,7 @@
 use std::borrow::Borrow;
 
 use crate::{
-  poly::unipoly::{CompressedUniPoly, UniPoly},
+  poly::unipoly::{ UniPoly},
   utils::transcript::{AppendToTranscript, ProofTranscript},
 };
 use ark_ff::{prelude::*, PrimeField};
@@ -78,9 +78,9 @@ use ark_r1cs_std::groups::CurveVar;
     Does tha13 for values near inputs (most of the gates).
 */
 
-#[derive(CanonicalSerialize, CanonicalDeserialize, Debug)]
+#[derive(Debug)]
 pub struct SumcheckInstanceProof {
-  compressed_polys: Vec<CompressedUniPoly<Fr>>,
+  compressed_polys: Vec<CompressedUniPolyVar>,
 }
 
 /// Univariate polynomial in constraint system
@@ -89,6 +89,7 @@ pub struct UniPolyVar {
   pub coeffs: Vec<FpVar<Fr>>,
 }
 
+#[allow(unused)]
 impl AllocVar<UniPoly<Fr>, Fr> for UniPolyVar {
   fn new_variable<T: Borrow<UniPoly<Fr>>>(
     cs: impl Into<Namespace<Fr>>,
@@ -110,6 +111,11 @@ impl AllocVar<UniPoly<Fr>, Fr> for UniPolyVar {
 
 #[allow(unused)]
 impl UniPolyVar {
+
+    pub fn degree(&self) -> usize {
+        self.coeffs.len() - 1
+    }
+
     pub fn eval_at_zero(&self) -> FpVar<Fr> {
       self.coeffs[0].clone()
     }
@@ -145,6 +151,32 @@ impl UniPolyVar {
     }
 }
 
+// ax^2 + bx + c stored as vec![c,a]
+// ax^3 + bx^2 + cx + d stored as vec![d,b,a]
+#[derive(Debug, Clone)]
+pub struct CompressedUniPolyVar {
+    coeffs_except_linear_term: Vec<FpVar<Fr>>,
+}
+
+#[allow(unused)]
+impl CompressedUniPolyVar {
+  // we require eval(0) + eval(1) = hint, so we can solve for the linear term as:
+  // linear_term = hint - 2 * constant_term - deg2 term - deg3 term
+  pub fn decompress(&self, hint: &FpVar<Fr>) -> UniPolyVar {
+      let mut linear_term =
+          hint.clone() - self.coeffs_except_linear_term[0].clone() - self.coeffs_except_linear_term[0].clone();
+      for i in 1..self.coeffs_except_linear_term.len() {
+          linear_term -= self.coeffs_except_linear_term[i].clone();
+      }
+
+      let mut coeffs = vec![self.coeffs_except_linear_term[0].clone(), linear_term];
+      coeffs.extend(self.coeffs_except_linear_term[1..].to_vec());
+      assert_eq!(self.coeffs_except_linear_term.len() + 1, coeffs.len());
+      
+      UniPolyVar { coeffs }
+  }
+}
+
 #[allow(unused)]
 impl SumcheckInstanceProof {
   /// Verify this sumcheck proof.
@@ -171,39 +203,46 @@ impl SumcheckInstanceProof {
   where
     G: CurveGroup<ScalarField = Fr>,
   {
-    let mut e = claim;
-    let mut r: Vec<Fr> = Vec::new();
+      let mut e_var = claim;
+      let mut e_wit = FpVar::<Fr>::new_input(cs.clone(), || Ok(e_var))?;
+      let mut r_vars: Vec<FpVar<Fr>> = Vec::new();
 
-    // verify that there is a univariate polynomial for each round
-    assert_eq!(self.compressed_polys.len(), num_rounds);
-    for i in 0..self.compressed_polys.len() {
-        let poly = self.compressed_polys[i].decompress(&e);
+      // verify that there is a univariate polynomial for each round
+      assert_eq!(self.compressed_polys.len(), num_rounds);
+      for i in 0..self.compressed_polys.len() {
+          let poly = self.compressed_polys[i].decompress(&e_wit);
 
-        let mut fpv_poly = UniPolyVar::new_variable(cs.clone(), || Ok(poly.clone()), AllocationMode::Witness)?;
+          // verify degree bound
+          assert_eq!(poly.degree(), degree_bound);
 
-        // verify degree bound
-        assert_eq!(poly.degree(), degree_bound);
+          // check if G_k(0) + G_k(1) = e
+          assert_eq!(
+            poly.eval_at_zero().value().unwrap() + poly.eval_at_one().value().unwrap(),
+            e_wit.value().unwrap()
+          );
+          let res = poly.eval_at_one() + poly.eval_at_zero();
 
-        // check if G_k(0) + G_k(1) = e
-        assert_eq!(poly.eval_at_zero() + poly.eval_at_one(), e);
-        let res = fpv_poly.eval_at_one() + fpv_poly.eval_at_zero();
+          res.enforce_equal(&e_wit)?;
 
-        let d_e = FpVar::<Fr>::new_input(cs.clone(), || Ok(e))?;
-        res.enforce_equal(&d_e)?;
+          // append the prover's message to the transcript
+          poly.append_to_transcript(b"poly", transcript);
 
-        // append the prover's message to the transcript
-        poly.append_to_transcript(b"fpv_poly", transcript);
+          //derive the verifier's challenge for the next round
+          let r_i = transcript.challenge_scalar(b"challenge_nextround");
+          let r_i_wit = FpVar::<Fr>::new_input(cs.clone(), || Ok(r_i))?;
 
-        //derive the verifier's challenge for the next round
-        let r_i = transcript.challenge_scalar(b"challenge_nextround");
+          r_vars.push(r_i_wit.clone());
 
-        r.push(r_i);
+          // evaluate the claimed degree-ell polynomial at r_i
+          e_wit = poly.evaluate(&r_i_wit);
+      }
 
-        // evaluate the claimed degree-ell polynomial at r_i
-        e = poly.evaluate(&r_i);
-    }
+      let r_fin: Vec<Fr> = r_vars
+      .iter()
+      .map(|v| v.value().unwrap())
+      .collect();
 
-    Ok((e, r))
+      Ok((e_wit.value().unwrap(), r_fin))
   }
 
 }
