@@ -201,11 +201,13 @@ struct PrimarySumcheckOpenings
 impl PrimarySumcheckOpenings {
     fn verify_openings<T: ProofTranscript<G1Projective>>(
         &self,
+        cs: ConstraintSystemRef<Fr>,
         commitment: &SurgeCommitment,
         opening_point: &Vec<Fr>,
         transcript: &mut T,
     ) -> Result<(), SynthesisError> {
         self.E_poly_opening_proof.verify(
+            cs.clone(),
             opening_point,
             &self.E_poly_openings,
             &commitment.generators.E_commitment_gens,
@@ -244,6 +246,7 @@ pub struct CombinedTableEvalProof {
 impl CombinedTableEvalProof {
  
   fn verify_single<T: ProofTranscript<G1Projective>>(
+      cs: ConstraintSystemRef<Fr>,
       proof: &PolyEvalProof,
       comm: &PolyCommitment,
       r: &[Fr],
@@ -277,12 +280,13 @@ impl CombinedTableEvalProof {
       // decommit the joint polynomial at r_joint
       transcript.append_scalar(b"joint_claim_eval", &joint_claim_eval);
 
-      proof.verify_plain(gens, transcript, &r_joint, &joint_claim_eval, comm)
+      proof.verify_plain(cs.clone(), gens, transcript, &r_joint, &joint_claim_eval, comm)
   }
 
   // verify evaluations of both polynomials at r
   pub fn verify<T: ProofTranscript<G1Projective>>(
       &self,
+      cs: ConstraintSystemRef<Fr>,
       r: &[Fr],
       evals: &[Fr],
       gens: &PolyCommitmentGens,
@@ -293,6 +297,7 @@ impl CombinedTableEvalProof {
       evals.resize(evals.len().next_power_of_two(), Fr::zero());
 
       CombinedTableEvalProof::verify_single(
+          cs.clone(),
           &self.joint_proof,
           &comm.joint_commitment,
           r,
@@ -341,6 +346,7 @@ impl PolyEvalProof {
 
   pub fn verify<T: ProofTranscript<G1Projective>>(
       &self,
+      cs: ConstraintSystemRef<Fr>,
       gens: &PolyCommitmentGens,
       transcript: &mut T,
       r: &[Fr], // point at which the polynomial is evaluated
@@ -358,6 +364,7 @@ impl PolyEvalProof {
       let C_LZ = VariableBaseMSM::msm(C_affine.as_ref(), L.as_ref()).unwrap();
 
       self.proof.verify(
+          cs.clone(),
           &gens.gens.gens_1,
           &gens.gens.gens_n,
           transcript,
@@ -369,6 +376,7 @@ impl PolyEvalProof {
 
   pub fn verify_plain<T: ProofTranscript<G1Projective>>(
       &self,
+      cs: ConstraintSystemRef<Fr>,
       gens: &PolyCommitmentGens,
       transcript: &mut T,
       r: &[Fr], // point at which the polynomial is evaluated
@@ -378,11 +386,11 @@ impl PolyEvalProof {
       // compute a commitment to Zr with a blind of zero
       let C_Zr = Zr.commit(&Fr::zero(), &gens.gens.gens_1);
 
-      self.verify(gens, transcript, r, &C_Zr, comm)
+      self.verify(cs.clone(), gens, transcript, r, &C_Zr, comm)
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DotProductProof {
     delta: G1Projective,
     beta: G1Projective,
@@ -393,13 +401,43 @@ pub struct DotProductProof {
 
 impl DotProductProof {
 
-  pub fn compute_dotproduct(a: &[Fr], b: &[Fr]) -> Fr {
+  pub fn compute_dotproduct(
+      cs: ConstraintSystemRef<Fr>,
+      a: &[Fr],
+      b: &[Fr]
+    ) -> FpVar<Fr> {
       assert_eq!(a.len(), b.len());
-      (0..a.len()).map(|i| a[i] * b[i]).sum()
+
+      let mut sum = FpVar::new_witness(cs.clone(), || Ok(Fr::from(0 as u64))).unwrap();
+
+      for i in 0..a.len() {
+        let a_wit = FpVar::new_witness(cs.clone(), || Ok(a[i])).unwrap();
+        let b_wit = FpVar::new_witness(cs.clone(), || Ok(b[i])).unwrap();
+        sum += (a_wit * b_wit);
+      }
+      sum
+  }
+  
+  fn batch_commit_blinded_r1cs(
+    cs: ConstraintSystemRef<Fr>,
+    inputs: &[Fr],
+    blind: &Fr,
+    gens_n: &MultiCommitGens<G1Projective>) -> G1Projective {
+    assert_eq!(gens_n.n, inputs.len());
+
+    let mut combined_bases = gens_n.G.clone();
+    combined_bases.push(gens_n.h);
+
+    let mut scalars = inputs.to_vec();
+    scalars.push(*blind);
+
+    G1Projective::msm_circuit(combined_bases.as_ref(), scalars.as_ref(), cs.clone()).unwrap()
+
   }
 
   pub fn verify<T: ProofTranscript<G1Projective>>(
       &self,
+      cs: ConstraintSystemRef<Fr>,
       gens_1: &MultiCommitGens<G1Projective>,
       gens_n: &MultiCommitGens<G1Projective>,
       transcript: &mut T,
@@ -424,12 +462,103 @@ impl DotProductProof {
       transcript.append_point(b"beta", &self.beta);
 
       let c = transcript.challenge_scalar(b"c");
+      let c_witness = FpVar::new_witness(cs.clone(), || Ok(c))?;
 
-      let mut result = *Cx * c + self.delta
-          == Commitments::batch_commit_blinded(self.z.as_ref(), &self.z_delta, gens_n);
+      // Cx and delta
+      let Cx_wit_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Cx.x))?;
+      let Cx_wit_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Cx.y))?;
+      let Cx_wit_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Cx.z))?;
 
-      let dotproduct_z_a = DotProductProof::compute_dotproduct(&self.z, a);
-      result &= *Cy * c + self.beta == dotproduct_z_a.commit(&self.z_beta, gens_1);
+      let Delta_wit_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(self.delta.x))?;
+      let Delta_wit_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(self.delta.y))?;
+      let Delta_wit_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(self.delta.z))?;
+
+      let Cx_wit_x_scalar = &Cx_wit_x.to_constraint_field()?[0];
+      let Cx_wit_y_scalar = &Cx_wit_y.to_constraint_field()?[0];
+      let Cx_wit_z_scalar = &Cx_wit_z.to_constraint_field()?[0];
+
+      let Delta_wit_x_scalar = &Delta_wit_x.to_constraint_field()?[0];
+      let Delta_wit_y_scalar = &Delta_wit_y.to_constraint_field()?[0];
+      let Delta_wit_z_scalar = &Delta_wit_z.to_constraint_field()?[0];
+
+      let Cx_wit_x_scalar_1 = &(Cx_wit_x_scalar * c_witness.clone() + Delta_wit_x_scalar);
+      let Cx_wit_y_scalar_1 = &(Cx_wit_x_scalar * c_witness.clone() + Delta_wit_y_scalar);
+      let Cx_wit_z_scalar_1 = &(Cx_wit_x_scalar * c_witness.clone() + Delta_wit_z_scalar);
+
+      let msm_result = Self::batch_commit_blinded_r1cs(cs.clone(), self.z.as_ref(), &self.z_delta, gens_n);
+
+      let msm_result_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(msm_result.x))?;
+      let msm_result_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(msm_result.y))?;
+      let msm_result_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(msm_result.z))?;
+
+      let msm_result_x_scalar = &msm_result_x.to_constraint_field()?[0];
+      let msm_result_y_scalar = &msm_result_y.to_constraint_field()?[0];
+      let msm_result_z_scalar = &msm_result_z.to_constraint_field()?[0];
+
+      // Compare in circuit below.
+      let mut result = *Cx * c + self.delta == msm_result;
+
+      let _ = Cx_wit_x_scalar_1.enforce_equal(&msm_result_x_scalar)?;
+      let _ = Cx_wit_y_scalar_1.enforce_equal(&msm_result_y_scalar)?;
+      let _ = Cx_wit_y_scalar_1.enforce_equal(&msm_result_y_scalar)?;
+
+      //Cy and beta
+      let Cy_wit_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Cy.x))?;
+      let Cy_wit_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Cy.y))?;
+      let Cy_wit_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(Cy.z))?;
+
+      let Beta_wit_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(self.delta.x))?;
+      let Beta_wit_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(self.beta.y))?;
+      let Beta_wit_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(self.beta.z))?;
+
+      let Cy_wit_x_scalar = &Cy_wit_x.to_constraint_field()?[0];
+      let Cy_wit_y_scalar = &Cy_wit_y.to_constraint_field()?[0];
+      let Cy_wit_z_scalar = &Cy_wit_z.to_constraint_field()?[0];
+
+      let Beta_wit_x_scalar = &Beta_wit_x.to_constraint_field()?[0];
+      let Beta_wit_y_scalar = &Beta_wit_y.to_constraint_field()?[0];
+      let Beta_wit_z_scalar = &Beta_wit_z.to_constraint_field()?[0];
+
+      let Cy_wit_x_scalar_1 = &(Cy_wit_x_scalar * c_witness.clone() + Delta_wit_x_scalar);
+      let Cy_wit_y_scalar_1 = &(Cy_wit_y_scalar * c_witness.clone() + Delta_wit_y_scalar);
+      let Cy_wit_z_scalar_1 = &(Cy_wit_z_scalar * c_witness.clone() + Delta_wit_z_scalar);
+
+      let dotproduct_z_a = DotProductProof::compute_dotproduct(cs.clone(), &self.z, a);
+
+      let gens_1_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(gens_1.G[0].x))?;
+      let gens_1_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(gens_1.G[0].y))?;
+      let gens_1_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(gens_1.G[0].z))?;
+
+      let gens_1_x_scalar = &gens_1_x.to_constraint_field()?[0];
+      let gens_1_y_scalar = &gens_1_y.to_constraint_field()?[0];
+      let gens_1_z_scalar = &gens_1_z.to_constraint_field()?[0];
+
+      let gens_1_h_witness_x = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(gens_1.h.x))?;
+      let gens_1_h_witness_y = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(gens_1.h.y))?;
+      let gens_1_h_witness_z = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(gens_1.h.z))?;
+
+      let gens_1_h_witness_x_scalar = &gens_1_h_witness_x.to_constraint_field()?[0];
+      let gens_1_h_witness_y_scalar = &gens_1_h_witness_y.to_constraint_field()?[0];
+      let gens_1_h_witness_z_scalar = &gens_1_h_witness_z.to_constraint_field()?[0];
+
+      //commit
+      assert_eq!(gens_1.n, 1);
+      let commit_result = gens_1.G[0] * dotproduct_z_a.value().unwrap() + gens_1.h * &self.z_beta;
+
+      let z_beta_witness = FpVar::new_witness(cs.clone(), || Ok(self.z_beta))?;
+
+      let commit_res_x = gens_1_x_scalar * dotproduct_z_a.clone() +
+      gens_1_h_witness_x_scalar * z_beta_witness.clone();
+      let commit_res_y = gens_1_y_scalar * dotproduct_z_a.clone() +
+      gens_1_h_witness_y_scalar * z_beta_witness.clone();
+      let commit_res_z = gens_1_z_scalar * dotproduct_z_a.clone() +
+      gens_1_h_witness_z_scalar * z_beta_witness.clone();
+
+      let _ = Cy_wit_x_scalar_1.enforce_equal(&commit_res_x)?;
+      let _ = Cy_wit_y_scalar_1.enforce_equal(&commit_res_y)?;
+      let _ = Cy_wit_z_scalar_1.enforce_equal(&commit_res_z)?;
+
+      result &= *Cy * c + self.beta == commit_result;
 
       if result {
           Ok(())
@@ -712,26 +841,6 @@ impl DotProductProofLog {
 
     let Gamma = *Cx + *Cy;
 
-    
-    /*
-    The bases fed to msm are considered public inputs.
-    let Cx_wit = (
-      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cx.x))?,
-      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cx.y))?,
-      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cx.z))?,
-    );
-
-    let Cy_wit = (
-      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cy.x))?,
-      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cy.y))?,
-      NonNativeFieldVar::<Fq, Fr>::new_input(cs.clone(), || Ok(Cy.z))?,
-    );
-
-    //Addition works normally as these are all values in the EC base field.
-    let Gamma_x = Cx_wit.0 + Cy_wit.0;
-    let Gamma_y = Cx_wit.1 + Cy_wit.1;
-    let Gamma_z = Cx_wit.2 + Cy_wit.2;
-    */
 
     // G, G, and Fp elem
     let (g_hat, Gamma_hat, a_hat) =
