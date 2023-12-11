@@ -41,6 +41,7 @@ use ark_r1cs_std::groups::CurveVar;
 use crate::utils::math::Math;
 
 use crate::poly::structured_poly::StructuredOpeningProof;
+use ark_ec::Group;
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -344,6 +345,35 @@ pub struct PolyEvalProof {
 
 impl PolyEvalProof {
 
+  pub fn compute_factored_lens(ell: usize) -> (usize, usize) {
+    (ell / 2, ell - ell / 2)
+  }
+
+  pub fn compute_factored_evals(
+    cs: ConstraintSystemRef<Fr>,
+    eq: EqPolynomial<Fr>
+  ) -> (Vec<Fr>, Vec<Fr>) {
+      let ell = eq.r.len();
+      let ell_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(ell as u64))).unwrap();
+
+      let (left_num_vars, _right_num_vars) = PolyEvalProof::compute_factored_lens(ell);
+      let left_num_vars_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(left_num_vars as u64))).unwrap();
+
+      //TODO: these evals may need to be done in circuit.
+      let L = EqPolynomial::new(eq.r[..left_num_vars].to_vec()).evals();
+      let R = EqPolynomial::new(eq.r[left_num_vars..ell].to_vec()).evals();
+
+      //Add L and R to circuit.
+      for i in 0..L.len() {
+        let _ = FpVar::new_witness(cs.clone(), || Ok(L[i])).unwrap();
+      }
+      for i in 0..R.len() {
+        let _ = FpVar::new_witness(cs.clone(), || Ok(R[i])).unwrap();
+      }
+
+      (L, R)
+  }
+
   pub fn verify<T: ProofTranscript<G1Projective>>(
       &self,
       cs: ConstraintSystemRef<Fr>,
@@ -354,14 +384,18 @@ impl PolyEvalProof {
       comm: &PolyCommitment,
   ) -> Result<(), SynthesisError> {
 
+      let r_vec = r.to_vec();
+
+      //add r to circuit.
+      for i in 0..r_vec.len() {
+        let _ = FpVar::new_witness(cs.clone(), || Ok(r_vec[i])).unwrap();
+      }
+
       // compute L and R
-      let eq: EqPolynomial<_> = EqPolynomial::new(r.to_vec());
-      let (L, R) = eq.compute_factored_evals();
+      let eq: EqPolynomial<_> = EqPolynomial::new(r_vec);
+      let (L, R) = PolyEvalProof::compute_factored_evals(cs.clone(), eq);
 
-      // compute a weighted sum of commitments and L
-      let C_affine = G1Projective::normalize_batch(&comm.C);
-
-      let C_LZ = VariableBaseMSM::msm(C_affine.as_ref(), L.as_ref()).unwrap();
+      let C_LZ = G1Projective::msm_circuit(comm.C.as_ref(), L.as_ref(), cs.clone()).unwrap();
 
       self.proof.verify(
           cs.clone(),
@@ -1058,6 +1092,58 @@ mod tests {
 
       println!("Number of constraints: {}", cs_ref.num_constraints());
 
+      Ok(())
+  }
+
+  #[test]
+fn test_combined_table_eval_proof() -> Result<(), SynthesisError> {
+
+      let mut rng = ark_std::test_rng();
+      let cs = ConstraintSystem::<Fr>::new();
+      let cs_ref = ConstraintSystemRef::new(cs);
+          
+      // Generate sample data
+      let r = (0..10).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+      let evals = (0..32).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+
+      let gens = PolyCommitmentGens::new(evals.len(), b"test");    
+      let C: Vec<G1Projective> = (0..evals.len()).map(|_| {
+          G1Projective::rand(&mut rng)
+      }).collect();
+      
+      let commitment = PolyCommitment {
+          C 
+      };
+
+      // Generate random proof data
+      let z = (0..10).map(|_| Fr::rand(&mut rng)).collect();
+      let z_delta = Fr::rand(&mut rng); 
+      let z_beta = Fr::rand(&mut rng);
+      let delta = G1Projective::rand(&mut rng);
+      let beta = G1Projective::rand(&mut rng);
+
+      let proof = PolyEvalProof {
+          proof: DotProductProof {
+              z,
+              z_delta, 
+              z_beta,
+              delta,
+              beta    
+          }
+      };
+
+      // Verify proof 
+      let mut transcript = Transcript::new(b"test");
+      let result = proof.verify(
+          cs_ref.clone(),
+          &gens, 
+          &mut transcript,
+          &r,
+          &G1Projective::generator(),
+          &commitment,
+      );
+
+      println!("Number of constraints: {}", cs_ref.num_constraints());
       Ok(())
   }
 

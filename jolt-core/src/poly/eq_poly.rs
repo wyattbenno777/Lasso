@@ -3,7 +3,7 @@ use ark_ff::PrimeField;
 use crate::utils::math::Math;
 
 pub struct EqPolynomial<F> {
-    r: Vec<F>,
+    pub r: Vec<F>,
 }
 
 impl<F: PrimeField> EqPolynomial<F> {
@@ -18,13 +18,14 @@ impl<F: PrimeField> EqPolynomial<F> {
             .product()
     }
 
+    //Using repeated squaring property of polynomials.
     pub fn evals(&self) -> Vec<F> {
         let ell = self.r.len();
 
         let mut evals: Vec<F> = vec![F::one(); ell.pow2()];
         let mut size = 1;
         for j in 0..ell {
-            // in each iteration, we double the size of chis
+            // in each iteration, we double the size
             size *= 2;
             for i in (0..size).rev().step_by(2) {
                 // copy each element from the prior iteration twice
