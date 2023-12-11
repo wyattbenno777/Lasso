@@ -1,10 +1,12 @@
 //! This module is an adaptation of code from Testudo and Lasso main branch.
 //use ark_ec::pairing::Pairing;
 use std::borrow::Borrow;
+use std::marker::PhantomData;
 
 use crate::{
-  poly::unipoly::{ UniPoly},
+  poly::unipoly::{UniPoly},
   utils::transcript::{AppendToTranscript, ProofTranscript},
+  poly::dense_mlpoly::{DensePolynomial}
 };
 use ark_ff::{prelude::*, PrimeField};
 
@@ -29,12 +31,16 @@ use ark_bn254::G1Projective as G1Projective;
 use std::ops::MulAssign;
 use ark_r1cs_std::ToConstraintFieldGadget;
 
-use crate::poly::commitments::MultiCommitGens;
+use crate::poly::commitments::{Commitments, MultiCommitGens};
+use crate::poly::eq_poly::EqPolynomial;
 
 #[cfg(not(feature = "ark-msm"))]
 use super::super::msm::VariableBaseMSM;
 use super::gadgets;
 use ark_r1cs_std::groups::CurveVar;
+use crate::utils::math::Math;
+
+use crate::poly::structured_poly::StructuredOpeningProof;
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -177,6 +183,262 @@ impl CompressedUniPolyVar {
   }
 }
 
+pub struct SurgePrimarySumcheck {
+  sumcheck_proof: SumcheckInstanceProof,
+  num_rounds: usize,
+  claimed_evaluation: Fr,
+  openings: PrimarySumcheckOpenings,
+}
+
+#[derive(Debug)]
+struct PrimarySumcheckOpenings
+{
+    E_poly_openings: Vec<Fr>,
+    E_poly_opening_proof: CombinedTableEvalProof,
+}
+
+
+impl PrimarySumcheckOpenings {
+    fn verify_openings<T: ProofTranscript<G1Projective>>(
+        &self,
+        commitment: &SurgeCommitment,
+        opening_point: &Vec<Fr>,
+        transcript: &mut T,
+    ) -> Result<(), SynthesisError> {
+        self.E_poly_opening_proof.verify(
+            opening_point,
+            &self.E_poly_openings,
+            &commitment.generators.E_commitment_gens,
+            &commitment.E_commitment,
+            transcript,
+        )
+    }
+}
+
+pub struct SurgeCommitment {
+  generators: SurgeCommitmentGenerators,
+  pub dim_read_commitment: CombinedTableCommitment,
+  pub final_commitment: CombinedTableCommitment,
+  pub E_commitment: CombinedTableCommitment,
+}
+
+pub struct SurgeCommitmentGenerators {
+  pub dim_read_commitment_gens: PolyCommitmentGens,
+  pub final_commitment_gens: PolyCommitmentGens,
+  pub E_commitment_gens: PolyCommitmentGens,
+}
+
+pub struct SurgePolys {
+  _group: PhantomData<G1Projective>,
+  pub dim: Vec<DensePolynomial<Fr>>,
+  pub read_cts: Vec<DensePolynomial<Fr>>,
+  pub final_cts: Vec<DensePolynomial<Fr>>,
+  pub E_polys: Vec<DensePolynomial<Fr>>,
+}
+
+#[derive(Debug)]
+pub struct CombinedTableEvalProof {
+    joint_proof: PolyEvalProof,
+}
+
+impl CombinedTableEvalProof {
+ 
+  fn verify_single<T: ProofTranscript<G1Projective>>(
+      proof: &PolyEvalProof,
+      comm: &PolyCommitment,
+      r: &[Fr],
+      evals: &[Fr],
+      gens: &PolyCommitmentGens,
+      transcript: &mut T,
+  ) -> Result<(), SynthesisError> {
+    
+      // append the claimed evaluations to transcript
+      for i in 0..evals.len() {
+        transcript.append_scalar(b"evals_ops_val", &evals[0]);
+      }
+
+      // n-to-1 reduction
+      let mut challenges = Vec::with_capacity(evals.len().log_2());
+
+      for i in 0..challenges.len() {          
+          let c = transcript.challenge_scalar(b"challenge");       
+          challenges.push(c);
+      }
+
+      let mut poly_evals = DensePolynomial::new(evals.to_vec());
+      for i in (0..challenges.len()).rev() {
+          poly_evals.bound_poly_var_bot(&challenges[i]);
+      }
+      assert_eq!(poly_evals.len(), 1);
+      let joint_claim_eval = poly_evals[0];
+      let mut r_joint = challenges;
+      r_joint.extend(r);
+
+      // decommit the joint polynomial at r_joint
+      transcript.append_scalar(b"joint_claim_eval", &joint_claim_eval);
+
+      proof.verify_plain(gens, transcript, &r_joint, &joint_claim_eval, comm)
+  }
+
+  // verify evaluations of both polynomials at r
+  pub fn verify<T: ProofTranscript<G1Projective>>(
+      &self,
+      r: &[Fr],
+      evals: &[Fr],
+      gens: &PolyCommitmentGens,
+      comm: &CombinedTableCommitment,
+      transcript: &mut T,
+  ) -> Result<(), SynthesisError> {
+      let mut evals = evals.to_owned();
+      evals.resize(evals.len().next_power_of_two(), Fr::zero());
+
+      CombinedTableEvalProof::verify_single(
+          &self.joint_proof,
+          &comm.joint_commitment,
+          r,
+          &evals,
+          gens,
+          transcript,
+      )
+  }
+}
+
+#[derive(Debug)]
+pub struct CombinedTableCommitment {
+    joint_commitment: PolyCommitment,
+}
+
+impl CombinedTableCommitment {
+    pub fn new(joint_commitment: PolyCommitment) -> Self {
+        Self { joint_commitment }
+    }
+}
+
+pub struct PolyCommitmentGens {
+  pub gens: DotProductProofGens,
+}
+
+impl PolyCommitmentGens {
+  // the number of variables in the multilinear polynomial
+  pub fn new(num_vars: usize, label: &'static [u8]) -> Self {
+      let (_left, right) = EqPolynomial::<Fr>::compute_factored_lens(num_vars);
+      let gens = DotProductProofGens::new(right.pow2(), label);
+      PolyCommitmentGens { gens }
+  }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct PolyCommitment {
+    C: Vec<G1Projective>,
+}
+
+#[derive(Debug)]
+pub struct PolyEvalProof {
+    proof: DotProductProof,
+}
+
+impl PolyEvalProof {
+
+  pub fn verify<T: ProofTranscript<G1Projective>>(
+      &self,
+      gens: &PolyCommitmentGens,
+      transcript: &mut T,
+      r: &[Fr], // point at which the polynomial is evaluated
+      C_Zr: &G1Projective,             // commitment to \widetilde{Z}(r)
+      comm: &PolyCommitment,
+  ) -> Result<(), SynthesisError> {
+
+      // compute L and R
+      let eq: EqPolynomial<_> = EqPolynomial::new(r.to_vec());
+      let (L, R) = eq.compute_factored_evals();
+
+      // compute a weighted sum of commitments and L
+      let C_affine = G1Projective::normalize_batch(&comm.C);
+
+      let C_LZ = VariableBaseMSM::msm(C_affine.as_ref(), L.as_ref()).unwrap();
+
+      self.proof.verify(
+          &gens.gens.gens_1,
+          &gens.gens.gens_n,
+          transcript,
+          &R,
+          &C_LZ,
+          C_Zr,
+      )
+  }
+
+  pub fn verify_plain<T: ProofTranscript<G1Projective>>(
+      &self,
+      gens: &PolyCommitmentGens,
+      transcript: &mut T,
+      r: &[Fr], // point at which the polynomial is evaluated
+      Zr: &Fr,  // evaluation \widetilde{Z}(r)
+      comm: &PolyCommitment,
+  ) -> Result<(), SynthesisError> {
+      // compute a commitment to Zr with a blind of zero
+      let C_Zr = Zr.commit(&Fr::zero(), &gens.gens.gens_1);
+
+      self.verify(gens, transcript, r, &C_Zr, comm)
+  }
+}
+
+#[derive(Debug)]
+pub struct DotProductProof {
+    delta: G1Projective,
+    beta: G1Projective,
+    z: Vec<Fr>,
+    z_delta: Fr,
+    z_beta: Fr,
+}
+
+impl DotProductProof {
+
+  pub fn compute_dotproduct(a: &[Fr], b: &[Fr]) -> Fr {
+      assert_eq!(a.len(), b.len());
+      (0..a.len()).map(|i| a[i] * b[i]).sum()
+  }
+
+  pub fn verify<T: ProofTranscript<G1Projective>>(
+      &self,
+      gens_1: &MultiCommitGens<G1Projective>,
+      gens_n: &MultiCommitGens<G1Projective>,
+      transcript: &mut T,
+      a: &[Fr],
+      Cx: &G1Projective,
+      Cy: &G1Projective,
+  ) -> Result<(), SynthesisError> {
+      if a.len() != gens_n.n {
+          return Err(SynthesisError::MissingCS);
+      }
+      if gens_1.n != 1 {
+          return Err(SynthesisError::MissingCS);
+      }
+
+      transcript.append_point(b"Cx", Cx);
+      transcript.append_point(b"Cy", Cy);
+
+      for i in 0..a.len() {
+        transcript.append_scalar(b"a", &a[i]);
+      }
+      transcript.append_point(b"delta", &self.delta);
+      transcript.append_point(b"beta", &self.beta);
+
+      let c = transcript.challenge_scalar(b"c");
+
+      let mut result = *Cx * c + self.delta
+          == Commitments::batch_commit_blinded(self.z.as_ref(), &self.z_delta, gens_n);
+
+      let dotproduct_z_a = DotProductProof::compute_dotproduct(&self.z, a);
+      result &= *Cy * c + self.beta == dotproduct_z_a.commit(&self.z_beta, gens_1);
+
+      if result {
+          Ok(())
+      } else {
+          Err(SynthesisError::MissingCS)
+      }
+  }
+}
+
 #[allow(unused)]
 impl SumcheckInstanceProof {
   /// Verify this sumcheck proof.
@@ -249,7 +511,7 @@ impl SumcheckInstanceProof {
 
 
 // Used for dot product proof in PCS.
-#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug)]
 pub struct BulletReductionProof {
   L_vec: Vec<G1Projective>,
   R_vec: Vec<G1Projective>,
@@ -419,7 +681,7 @@ impl DotProductProofGens {
   }
 }
 
-#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug)]
 pub struct DotProductProofLog {
   bullet_reduction_proof: BulletReductionProof,
   delta: G1Projective,
