@@ -245,6 +245,27 @@ pub struct CombinedTableEvalProof {
 }
 
 impl CombinedTableEvalProof {
+
+  pub fn bound_poly_var_bot(
+    cs: ConstraintSystemRef<Fr>,
+    mut dense: DensePolynomial<Fr>,
+    r: &Fr
+  ) -> DensePolynomial<Fr> {
+      let n = dense.len() / 2;
+      for i in 0..n {
+          let mut dense_wit_i = FpVar::new_witness(cs.clone(), || Ok(dense.Z[i])).unwrap();
+          let dense_wit_1 = FpVar::new_witness(cs.clone(), || Ok(dense.Z[2 * i])).unwrap();
+          let dense_wit_2 = FpVar::new_witness(cs.clone(), || Ok(dense.Z[2 * i + 1])).unwrap();
+          let dense_wit_3 = FpVar::new_witness(cs.clone(), || Ok(dense.Z[2 * i])).unwrap();
+          let r_wit = FpVar::new_witness(cs.clone(), || Ok(*r)).unwrap();  
+
+          dense.Z[i] = dense.Z[2 * i] + *r * (dense.Z[2 * i + 1] - dense.Z[2 * i]);
+          dense_wit_i = dense_wit_1 + r_wit * (dense_wit_2 - dense_wit_3);
+      }
+      dense.num_vars -= 1;
+      dense.len = n;
+      dense
+  }
  
   fn verify_single<T: ProofTranscript<G1Projective>>(
       cs: ConstraintSystemRef<Fr>,
@@ -263,15 +284,19 @@ impl CombinedTableEvalProof {
 
       // n-to-1 reduction
       let mut challenges = Vec::with_capacity(evals.len().log_2());
+      //let mut challeneges_witness = Vec::with_capacity(evals.len().log_2());
 
+      // Might not need the challenges as witness.
       for i in 0..challenges.len() {          
-          let c = transcript.challenge_scalar(b"challenge");       
+          let c = transcript.challenge_scalar(b"challenge");   
+          //let c_s_wit = FpVar::new_witness(cs.clone(), || Ok(c))?;    
           challenges.push(c);
+          //challeneges_witness.push(c_s_wit);
       }
 
       let mut poly_evals = DensePolynomial::new(evals.to_vec());
       for i in (0..challenges.len()).rev() {
-          poly_evals.bound_poly_var_bot(&challenges[i]);
+        poly_evals = CombinedTableEvalProof::bound_poly_var_bot(cs.clone(), poly_evals, &challenges[i]);
       }
       assert_eq!(poly_evals.len(), 1);
       let joint_claim_eval = poly_evals[0];
@@ -1053,15 +1078,6 @@ fn ln_without_floats(a: usize) -> usize {
   (ark_std::log2(a) * 69 / 100) as usize
 }
 
-/*
-/// Circuit gadget that implements the sumcheck verifier
-#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
-struct PrimarySumcheck<G: CurveGroup, const ALPHA: usize> {
-  proof: SumcheckInstanceProof<G::ScalarField>,
-  claimed_evaluation: G::ScalarField,
-  eval_derefs: [G::ScalarField; ALPHA],
-  //proof_derefs: CombinedTableEvalProof<G, ALPHA>,
-}*/
 
 #[cfg(test)]
 mod tests {
@@ -1135,7 +1151,7 @@ mod tests {
   }
 
   #[test]
-fn combined_table_eval_proof_constraint_count() -> Result<(), SynthesisError> {
+  fn eval_proof_constraint_count() -> Result<(), SynthesisError> {
 
       let mut rng = ark_std::test_rng();
       let cs = ConstraintSystem::<Fr>::new();
@@ -1182,6 +1198,59 @@ fn combined_table_eval_proof_constraint_count() -> Result<(), SynthesisError> {
           &commitment,
       );
 
+      println!("Number of constraints: {}", cs_ref.num_constraints());
+      Ok(())
+  }
+
+  #[test]
+  fn combined_table_eval_proof_constraint_count() -> Result<(), SynthesisError> {
+      // Generate test data
+      let mut rng = ark_std::test_rng();
+      let cs = ConstraintSystem::<Fr>::new();
+      let cs_ref = ConstraintSystemRef::new(cs);
+      
+      let r = vec![Fr::rand(&mut rng); 10];
+      let evals = vec![Fr::rand(&mut rng); 1];
+      
+      let gens = PolyCommitmentGens::new(32, b"test");
+      
+      let commitment = CombinedTableCommitment::new({
+          let C: Vec<G1Projective> = (0..32).map(|_| G1Projective::rand(&mut rng)).collect(); 
+          PolyCommitment { C }
+      });
+      
+      // Generate random proof data
+      let z = (0..10).map(|_| Fr::rand(&mut rng)).collect();
+      let z_delta = Fr::rand(&mut rng); 
+      let z_beta = Fr::rand(&mut rng);
+      let delta = G1Projective::rand(&mut rng);
+      let beta = G1Projective::rand(&mut rng);
+
+      let proof = PolyEvalProof {
+          proof: DotProductProof {
+              z,
+              z_delta, 
+              z_beta,
+              delta,
+              beta    
+          }
+      };
+
+      let mut transcript = Transcript::new(b"test");
+
+      // Verify proof
+      let result = CombinedTableEvalProof {
+          joint_proof: proof
+      }
+      .verify(
+          cs_ref.clone(), 
+          &r,
+          &evals,
+          &gens,
+          &commitment,
+          &mut transcript, 
+      );
+      
       println!("Number of constraints: {}", cs_ref.num_constraints());
       Ok(())
   }
