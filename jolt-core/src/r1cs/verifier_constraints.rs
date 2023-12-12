@@ -349,6 +349,40 @@ impl PolyEvalProof {
     (ell / 2, ell - ell / 2)
   }
 
+  //Using repeated squaring property of polynomials.
+  pub fn evals(
+    cs: ConstraintSystemRef<Fr>,
+    eq: EqPolynomial<Fr>
+  ) -> Vec<Fr> {
+      let ell = eq.r.len();
+
+      let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
+      let two_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2 as u64))).unwrap();
+
+
+      let mut evals: Vec<FpVar<Fr>> = vec![one_witness.clone(); ell.pow2()];
+      let mut size = one_witness;
+      let mut size_num = 1;
+      for j in 0..ell {
+          // in each iteration, we double the size
+          size *= two_witness.clone();
+          size_num *= 2;
+          let eq_r_witness = FpVar::new_witness(cs.clone(), || Ok(eq.r[j])).unwrap();
+          
+          for i in (0..size_num).rev().step_by(2) {
+              // copy each element from the prior iteration twice
+              let scalar = evals[i / 2].clone();
+              evals[i] = scalar.clone() * eq_r_witness.clone();
+              evals[i - 1] = scalar.clone() - evals[i].clone();
+          }
+      }
+      let mut final_evals: Vec<Fr> = vec![Fr::one(); ell.pow2()];
+      for i in 0..final_evals.len() {
+        final_evals[i] = evals[i].value().unwrap();
+      }
+      final_evals
+  }
+
   pub fn compute_factored_evals(
     cs: ConstraintSystemRef<Fr>,
     eq: EqPolynomial<Fr>
@@ -357,19 +391,24 @@ impl PolyEvalProof {
       let ell_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(ell as u64))).unwrap();
 
       let (left_num_vars, _right_num_vars) = PolyEvalProof::compute_factored_lens(ell);
-      let left_num_vars_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(left_num_vars as u64))).unwrap();
 
-      //TODO: these evals may need to be done in circuit.
-      let L = EqPolynomial::new(eq.r[..left_num_vars].to_vec()).evals();
-      let R = EqPolynomial::new(eq.r[left_num_vars..ell].to_vec()).evals();
+      let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();
+      let two_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2 as u64))).unwrap();
 
-      //Add L and R to circuit.
-      for i in 0..L.len() {
-        let _ = FpVar::new_witness(cs.clone(), || Ok(L[i])).unwrap();
-      }
-      for i in 0..R.len() {
-        let _ = FpVar::new_witness(cs.clone(), || Ok(R[i])).unwrap();
-      }
+      let inv_two_witness = FpVar::new_witness(cs.clone(), || {
+        let two = two_witness.value().unwrap();
+        Ok(two.inverse().unwrap())
+      });
+
+      // Multiply inverse by ell_witness to calculate ell / 2
+      // This works because:
+      //     ell / 2 
+      // = ell * (1/2)    // Divide by 2
+      // = ell * inv_two  // Multiply by modular multiplicative inverse
+      let left_num_vars_witness = ell_witness * inv_two_witness.unwrap();
+
+      let L = PolyEvalProof::evals(cs.clone(), EqPolynomial::new(eq.r[..left_num_vars].to_vec()));
+      let R = PolyEvalProof::evals(cs.clone(), EqPolynomial::new(eq.r[left_num_vars..ell].to_vec()));
 
       (L, R)
   }
@@ -1096,7 +1135,7 @@ mod tests {
   }
 
   #[test]
-fn test_combined_table_eval_proof() -> Result<(), SynthesisError> {
+fn combined_table_eval_proof_constraint_count() -> Result<(), SynthesisError> {
 
       let mut rng = ark_std::test_rng();
       let cs = ConstraintSystem::<Fr>::new();
