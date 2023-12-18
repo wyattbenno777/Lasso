@@ -1184,9 +1184,6 @@ impl BatchedGrandProductArgumentR1CS {
       let num_layers = self.proof.len();
 
       let num_layers_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
-      let num_layers_witnessa = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
-      let num_layers_witnessb = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
-      let num_layers_witnessc = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
 
       let mut claims_to_verify = claims_prod_vec.to_owned();
       for (num_rounds, i) in (0..num_layers).enumerate() {
