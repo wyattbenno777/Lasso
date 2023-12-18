@@ -40,8 +40,10 @@ use super::gadgets;
 use ark_r1cs_std::groups::CurveVar;
 use crate::utils::math::Math;
 
-use crate::poly::structured_poly::StructuredOpeningProof;
+use crate::poly::structured_poly::{BatchablePolynomials, StructuredOpeningProof};
 use ark_ec::Group;
+
+use crate::subprotocols::sumcheck::CubicSumcheckParams;
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -86,18 +88,18 @@ use ark_ec::Group;
 */
 
 #[derive(Debug)]
-pub struct SumcheckInstanceProof {
-  compressed_polys: Vec<CompressedUniPolyVar>,
+pub struct SumcheckInstanceProofR1CS {
+  compressed_polys: Vec<CompressedUniPolyVarR1CS>,
 }
 
 /// Univariate polynomial in constraint system
 #[derive(Clone)]
-pub struct UniPolyVar {
+pub struct UniPolyVarR1CS {
   pub coeffs: Vec<FpVar<Fr>>,
 }
 
 #[allow(unused)]
-impl AllocVar<UniPoly<Fr>, Fr> for UniPolyVar {
+impl AllocVar<UniPoly<Fr>, Fr> for UniPolyVarR1CS {
   fn new_variable<T: Borrow<UniPoly<Fr>>>(
     cs: impl Into<Namespace<Fr>>,
     f: impl FnOnce() -> Result<T, SynthesisError>,
@@ -117,7 +119,7 @@ impl AllocVar<UniPoly<Fr>, Fr> for UniPolyVar {
 }
 
 #[allow(unused)]
-impl UniPolyVar {
+impl UniPolyVarR1CS {
 
     pub fn degree(&self) -> usize {
         self.coeffs.len() - 1
@@ -147,29 +149,29 @@ impl UniPolyVar {
     }
 
     fn append_to_transcript<T: ProofTranscript<G1Projective>>(&self, label: &'static [u8], transcript: &mut T) {
-      transcript.append_message(label, b"UniPolyVar_begin");
+      transcript.append_message(label, b"UniPolyVarR1CS_begin");
       
       for i in 0..self.coeffs.len() {
         let value = self.coeffs[i].value().unwrap();
         transcript.append_scalar(b"coeff", &value);
       }
       
-      transcript.append_message(label, b"UniPolyVar_end");
+      transcript.append_message(label, b"UniPolyVarR1CS_end");
     }
 }
 
 // ax^2 + bx + c stored as vec![c,a]
 // ax^3 + bx^2 + cx + d stored as vec![d,b,a]
 #[derive(Debug, Clone)]
-pub struct CompressedUniPolyVar {
+pub struct CompressedUniPolyVarR1CS {
     coeffs_except_linear_term: Vec<FpVar<Fr>>,
 }
 
 #[allow(unused)]
-impl CompressedUniPolyVar {
+impl CompressedUniPolyVarR1CS {
   // we require eval(0) + eval(1) = hint, so we can solve for the linear term as:
   // linear_term = hint - 2 * constant_term - deg2 term - deg3 term
-  pub fn decompress(&self, hint: &FpVar<Fr>) -> UniPolyVar {
+  pub fn decompress(&self, hint: &FpVar<Fr>) -> UniPolyVarR1CS {
       let mut linear_term =
           hint.clone() - self.coeffs_except_linear_term[0].clone() - self.coeffs_except_linear_term[0].clone();
       for i in 1..self.coeffs_except_linear_term.len() {
@@ -180,26 +182,26 @@ impl CompressedUniPolyVar {
       coeffs.extend(self.coeffs_except_linear_term[1..].to_vec());
       assert_eq!(self.coeffs_except_linear_term.len() + 1, coeffs.len());
       
-      UniPolyVar { coeffs }
+      UniPolyVarR1CS { coeffs }
   }
 }
 
 pub struct SurgePrimarySumcheck {
-  sumcheck_proof: SumcheckInstanceProof,
+  sumcheck_proof: SumcheckInstanceProofR1CS,
   num_rounds: usize,
   claimed_evaluation: Fr,
-  openings: PrimarySumcheckOpenings,
+  openings: PrimarySumcheckOpeningsR1CS,
 }
 
 #[derive(Debug)]
-struct PrimarySumcheckOpenings
+struct PrimarySumcheckOpeningsR1CS
 {
     E_poly_openings: Vec<Fr>,
     E_poly_opening_proof: CombinedTableEvalProof,
 }
 
 
-impl PrimarySumcheckOpenings {
+impl PrimarySumcheckOpeningsR1CS {
     fn verify_openings<T: ProofTranscript<G1Projective>>(
         &self,
         cs: ConstraintSystemRef<Fr>,
@@ -283,7 +285,7 @@ impl CombinedTableEvalProof {
       }
 
       // n-to-1 reduction
-      let mut challenges = Vec::with_capacity(evals.len().log_2());
+      /*let mut challenges = Vec::with_capacity(evals.len().log_2());
       //let mut challeneges_witness = Vec::with_capacity(evals.len().log_2());
 
       // Might not need the challenges as witness.
@@ -292,7 +294,12 @@ impl CombinedTableEvalProof {
           //let c_s_wit = FpVar::new_witness(cs.clone(), || Ok(c))?;    
           challenges.push(c);
           //challeneges_witness.push(c_s_wit);
-      }
+      }*/
+
+      let challenges = transcript.challenge_vector(
+        b"challenge_combine_n_to_one",
+        evals.len().log_2(),
+      );
 
       let mut poly_evals = DensePolynomial::new(evals.to_vec());
       for i in (0..challenges.len()).rev() {
@@ -319,6 +326,8 @@ impl CombinedTableEvalProof {
       comm: &CombinedTableCommitment,
       transcript: &mut T,
   ) -> Result<(), SynthesisError> {
+      transcript.append_protocol_name(b"Lasso CombinedTableEvalProof");
+
       let mut evals = evals.to_owned();
       evals.resize(evals.len().next_power_of_two(), Fr::zero());
 
@@ -543,6 +552,9 @@ impl DotProductProof {
       Cx: &G1Projective,
       Cy: &G1Projective,
   ) -> Result<(), SynthesisError> {
+
+      transcript.append_protocol_name(b"dot product proof");
+
       if a.len() != gens_n.n {
           return Err(SynthesisError::MissingCS);
       }
@@ -667,7 +679,7 @@ impl DotProductProof {
 }
 
 #[allow(unused)]
-impl SumcheckInstanceProof {
+impl SumcheckInstanceProofR1CS {
   /// Verify this sumcheck proof.
   /// Note: Verification does not execute the final check of sumcheck protocol: g_v(r_v) = oracle_g(r),
   /// as the oracle is not passed in. Expected that the caller will implement.
@@ -688,12 +700,12 @@ impl SumcheckInstanceProof {
     num_rounds: usize,
     degree_bound: usize,
     transcript: &mut T,
-  ) -> Result<(Fr, Vec<Fr>), SynthesisError>
+  ) -> Result<(Fr, Vec<Fr>, FpVar<Fr>, Vec<FpVar<Fr>>), SynthesisError>
   where
     G: CurveGroup<ScalarField = Fr>,
   {
       let mut e_var = claim;
-      let mut e_wit = FpVar::<Fr>::new_input(cs.clone(), || Ok(e_var))?;
+      let mut e_wit = FpVar::<Fr>::new_witness(cs.clone(), || Ok(e_var))?;
       let mut r_vars: Vec<FpVar<Fr>> = Vec::new();
 
       // verify that there is a univariate polynomial for each round
@@ -731,7 +743,7 @@ impl SumcheckInstanceProof {
       .map(|v| v.value().unwrap())
       .collect();
 
-      Ok((e_wit.value().unwrap(), r_fin))
+      Ok((e_wit.value().unwrap(), r_fin, e_wit, r_vars))
   }
 
 }
@@ -1078,6 +1090,200 @@ fn ln_without_floats(a: usize) -> usize {
   (ark_std::log2(a) * 69 / 100) as usize
 }
 
+// Memory Checking in R1CS.
+
+pub struct MultisetHashes {
+  /// Multiset hash of "init" tuple(s)
+  hash_init: Fr,
+  /// Multiset hash of "final" tuple(s)
+  hash_final: Fr,
+  /// Multiset hash of "read" tuple(s)
+  hash_read: Fr,
+  /// Multiset hash of "write" tuple(s)
+  hash_write: Fr,
+}
+
+impl MultisetHashes {
+
+  fn append_to_transcript<T: ProofTranscript<G1Projective>>(&self, label: &'static [u8], transcript: &mut T) {
+    transcript.append_scalar(b"claim_hash_init", &self.hash_init);
+    transcript.append_scalar(b"claim_hash_read", &self.hash_read);
+    transcript.append_scalar(b"claim_hash_write", &self.hash_write);
+    transcript.append_scalar(b"claim_hash_final", &self.hash_final);
+  }
+
+}
+
+#[derive(Debug)]
+pub struct LayerProofBatchedR1CS {
+    pub proof: SumcheckInstanceProofR1CS,
+    pub claims_poly_A: Vec<Fr>,
+    pub claims_poly_B: Vec<Fr>,
+    pub combine_prod: bool,
+}
+
+#[allow(dead_code)]
+impl LayerProofBatchedR1CS {
+    pub fn verify<G, T: ProofTranscript<G1Projective>>(
+        &self,
+        cs: ConstraintSystemRef<Fr>,
+        claim: Fr,
+        num_rounds: usize,
+        degree_bound: usize,
+        transcript: &mut T,
+    ) -> (Fr, Vec<Fr>, FpVar<Fr>, Vec<FpVar<Fr>>)
+    where
+        G: CurveGroup<ScalarField = Fr>,
+    {
+        self.proof
+            .verify_sumcheck::<G, T>(cs.clone(), claim, num_rounds, degree_bound, transcript)
+            .unwrap()
+    }
+}
+
+#[derive(Debug)]
+pub struct BatchedGrandProductArgumentR1CS {
+    proof: Vec<LayerProofBatchedR1CS>,
+}
+
+impl BatchedGrandProductArgumentR1CS {
+  pub fn verify<T: ProofTranscript<G1Projective>>(
+      &self,
+      cs: ConstraintSystemRef<Fr>,
+      claims_prod_vec: &Vec<Fr>,
+      transcript: &mut T,
+  ) -> (Vec<Fr>, Vec<Fr>)
+  {
+      let mut rand: Vec<Fr> = Vec::new();
+      let num_layers = self.proof.len();
+
+      let num_layers_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
+
+      let mut claims_to_verify = claims_prod_vec.to_owned();
+      for (num_rounds, i) in (0..num_layers).enumerate() {
+          // produce random coefficients, one for each instance
+          let coeff_vec =
+          transcript.challenge_vector(b"rand_coeffs_next_layer", claims_to_verify.len());
+
+          let mut coeff_vec_witness = Vec::with_capacity(coeff_vec.len());
+
+          for i in 0..coeff_vec.len() {          
+            let c_s_wit = FpVar::new_witness(cs.clone(), || Ok(coeff_vec[i])).unwrap();    
+            coeff_vec_witness.push(c_s_wit);
+          }
+
+          // produce a joint claim
+          let mut claim_wit = FpVar::new_witness(cs.clone(), || Ok(Fr::zero())).unwrap();  
+          let claim = (0..claims_to_verify.len())
+              .map(|i| {
+                let claims_to_verify_wit = FpVar::new_witness(cs.clone(), || Ok(claims_to_verify[i])).unwrap();  
+                claim_wit += claims_to_verify_wit * coeff_vec_witness[i].clone();
+                claims_to_verify[i] * coeff_vec[i]
+              })
+              .sum();
+          
+          let mut claim_res = FpVar::new_witness(cs.clone(), || Ok(claim)).unwrap();  
+          let _ = claim_wit.enforce_equal(&claim_res).unwrap();
+
+          // This is a sumcheck verify
+          let (claim_last, rand_prod, claim_last_wit, rand_prod_wit) =
+              self.proof[i].verify::<G1Projective, T>(cs.clone(), claim, num_rounds, 3, transcript);
+
+          let claims_prod_left = &self.proof[i].claims_poly_A;
+          let claims_prod_right = &self.proof[i].claims_poly_B;
+          assert_eq!(claims_prod_left.len(), claims_prod_vec.len());
+          assert_eq!(claims_prod_right.len(), claims_prod_vec.len());
+
+          let mut claims_prod_left_witness = Vec::with_capacity(coeff_vec.len());
+
+          for i in 0..claims_prod_left.len() {          
+            let wit = FpVar::new_witness(cs.clone(), || Ok(claims_prod_left[i])).unwrap();    
+            claims_prod_left_witness.push(wit);
+          }
+
+          let mut claims_prod_right_witness = Vec::with_capacity(coeff_vec.len());
+
+          for i in 0..claims_prod_right.len() {          
+            let wit = FpVar::new_witness(cs.clone(), || Ok(claims_prod_right[i])).unwrap();    
+            claims_prod_right_witness.push(wit);
+          }
+
+          let mut claims_prod_vec_witness = Vec::with_capacity(coeff_vec.len());
+
+          for i in 0..claims_prod_vec.len() {          
+            let wit = FpVar::new_witness(cs.clone(), || Ok(claims_prod_vec[i])).unwrap();    
+            claims_prod_vec_witness.push(wit);
+          }
+
+          for i in 0..claims_prod_vec.len() {
+              transcript.append_scalar(b"claim_prod_left", &claims_prod_left[i]);
+              transcript.append_scalar(b"claim_prod_right", &claims_prod_right[i]);
+          }
+
+          assert_eq!(rand.len(), rand_prod.len());
+          let eq: Fr = (0..rand.len())
+              .map(|i| rand[i] * rand_prod[i] + (Fr::one() - rand[i]) * (Fr::one() - rand_prod[i]))
+              .product();
+
+          // Compute the claim_expected which is a random linear combination of the batched evaluations.
+          // The evaluation is the combination of eq / A / B depending on the cubic layer type (flags / prod).
+          // We also compute claims_to_verify which computes sumcheck_cubic_poly(r, r') from
+          // sumcheck_cubic_poly(r, 0), sumcheck_subic_poly(r, 1)
+          let claim_expected = if self.proof[i].combine_prod {
+              let claim_expected: Fr = (0..claims_prod_vec.len())
+                  .map(|i| {
+                      coeff_vec[i]
+                          * CubicSumcheckParams::combine_prod(
+                              &claims_prod_left[i],
+                              &claims_prod_right[i],
+                              &eq,
+                          )
+                  })
+                  .sum();
+
+              // produce a random challenge
+              let r_layer = transcript.challenge_scalar(b"challenge_r_layer");
+
+              claims_to_verify = (0..claims_prod_left.len())
+                  .map(|i| {
+                      claims_prod_left[i] + r_layer * (claims_prod_right[i] - claims_prod_left[i])
+                  })
+                  .collect::<Vec<Fr>>();
+
+              let mut ext = vec![r_layer];
+              ext.extend(rand_prod);
+              rand = ext;
+
+              claim_expected
+          } else {
+              let claim_expected: Fr = (0..claims_prod_vec.len())
+                  .map(|i| {
+                      coeff_vec[i]
+                          * CubicSumcheckParams::combine_flags(
+                              &claims_prod_left[i],
+                              &claims_prod_right[i],
+                              &eq,
+                          )
+                  })
+                  .sum();
+
+              rand = rand_prod;
+
+              claims_to_verify = (0..claims_prod_left.len())
+                  .map(|i| {
+                      claims_prod_left[i] * claims_prod_right[i]
+                          + (Fr::one() - claims_prod_right[i])
+                  })
+                  .collect::<Vec<Fr>>();
+
+              claim_expected
+          };
+
+          assert_eq!(claim_expected, claim_last);
+      }
+      (claims_to_verify, rand)
+  }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1129,11 +1335,11 @@ mod tests {
       let mut transcript = Transcript::new(b"dummy-label");
 
       let poly_coeffs = vec![FpVar::new_input(cs_ref.clone(), || Ok(Fr::rand(&mut ark_std::test_rng()))).unwrap(); 10]; 
-      let compressed_poly = CompressedUniPolyVar {
+      let compressed_poly = CompressedUniPolyVarR1CS {
           coeffs_except_linear_term: poly_coeffs
       };
 
-      let proof = SumcheckInstanceProof {
+      let proof = SumcheckInstanceProofR1CS {
           compressed_polys: vec![compressed_poly; 5] 
       };
 
