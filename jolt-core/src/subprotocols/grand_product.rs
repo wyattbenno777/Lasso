@@ -197,7 +197,7 @@ impl<F: PrimeField> BatchedGrandProductCircuit<F> {
 
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub struct BatchedGrandProductArgument<F: PrimeField> {
-    proof: Vec<LayerProofBatched<F>>,
+    pub proof: Vec<LayerProofBatched<F>>,
 }
 
 impl<F: PrimeField> BatchedGrandProductArgument<F> {
@@ -335,6 +335,9 @@ impl<F: PrimeField> BatchedGrandProductArgument<F> {
                 transcript.append_scalar(b"claim_prod_left", &claims_prod_left[i]);
                 transcript.append_scalar(b"claim_prod_right", &claims_prod_right[i]);
             }
+
+            //println!("a: {:?}", rand.len());
+            //println!("b: {:?}", rand_prod.len());
 
             assert_eq!(rand.len(), rand_prod.len());
             let eq: F = (0..rand.len())

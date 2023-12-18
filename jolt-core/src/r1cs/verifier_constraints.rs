@@ -44,6 +44,7 @@ use crate::poly::structured_poly::{BatchablePolynomials, StructuredOpeningProof}
 use ark_ec::Group;
 
 use crate::subprotocols::sumcheck::CubicSumcheckParams;
+use crate::subprotocols::grand_product::BatchedGrandProductArgument;
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -148,16 +149,6 @@ impl UniPolyVarR1CS {
       eval
     }
 
-    fn append_to_transcript<T: ProofTranscript<G1Projective>>(&self, label: &'static [u8], transcript: &mut T) {
-      transcript.append_message(label, b"UniPolyVarR1CS_begin");
-      
-      for i in 0..self.coeffs.len() {
-        let value = self.coeffs[i].value().unwrap();
-        transcript.append_scalar(b"coeff", &value);
-      }
-      
-      transcript.append_message(label, b"UniPolyVarR1CS_end");
-    }
 }
 
 // ax^2 + bx + c stored as vec![c,a]
@@ -693,17 +684,14 @@ impl SumcheckInstanceProofR1CS {
   /// Returns (e, r)
   /// - `e`: Claimed evaluation at random point
   /// - `r`: Evaluation point
-  pub fn verify_sumcheck<G, T: ProofTranscript<G1Projective>>(
+  pub fn verify_sumcheck<T: ProofTranscript<G1Projective>>(
     &self,
     cs: ConstraintSystemRef<Fr>,
     claim: Fr,
     num_rounds: usize,
     degree_bound: usize,
     transcript: &mut T,
-  ) -> Result<(Fr, Vec<Fr>, FpVar<Fr>, Vec<FpVar<Fr>>), SynthesisError>
-  where
-    G: CurveGroup<ScalarField = Fr>,
-  {
+  ) -> Result<(Fr, Vec<Fr>, FpVar<Fr>, Vec<FpVar<Fr>>), SynthesisError> {
       let mut e_var = claim;
       let mut e_wit = FpVar::<Fr>::new_witness(cs.clone(), || Ok(e_var))?;
       let mut r_vars: Vec<FpVar<Fr>> = Vec::new();
@@ -726,11 +714,15 @@ impl SumcheckInstanceProofR1CS {
           res.enforce_equal(&e_wit)?;
 
           // append the prover's message to the transcript
-          poly.append_to_transcript(b"poly", transcript);
+          transcript.append_message(b"poly", b"UniPoly_begin");
+          for i in 0..poly.coeffs.len() {
+              transcript.append_scalar(b"coeff", &poly.coeffs[i].value().unwrap());
+          }
+          transcript.append_message(b"poly", b"UniPoly_end");
 
           //derive the verifier's challenge for the next round
           let r_i = transcript.challenge_scalar(b"challenge_nextround");
-          let r_i_wit = FpVar::<Fr>::new_input(cs.clone(), || Ok(r_i))?;
+          let r_i_wit = FpVar::<Fr>::new_witness(cs.clone(), || Ok(r_i))?;
 
           r_vars.push(r_i_wit.clone());
 
@@ -1124,19 +1116,16 @@ pub struct LayerProofBatchedR1CS {
 
 #[allow(dead_code)]
 impl LayerProofBatchedR1CS {
-    pub fn verify<G, T: ProofTranscript<G1Projective>>(
+    pub fn verify<T: ProofTranscript<G1Projective>>(
         &self,
         cs: ConstraintSystemRef<Fr>,
         claim: Fr,
         num_rounds: usize,
         degree_bound: usize,
         transcript: &mut T,
-    ) -> (Fr, Vec<Fr>, FpVar<Fr>, Vec<FpVar<Fr>>)
-    where
-        G: CurveGroup<ScalarField = Fr>,
-    {
+    ) -> (Fr, Vec<Fr>, FpVar<Fr>, Vec<FpVar<Fr>>){
         self.proof
-            .verify_sumcheck::<G, T>(cs.clone(), claim, num_rounds, degree_bound, transcript)
+            .verify_sumcheck::<T>(cs.clone(), claim, num_rounds, degree_bound, transcript)
             .unwrap()
     }
 }
@@ -1147,6 +1136,43 @@ pub struct BatchedGrandProductArgumentR1CS {
 }
 
 impl BatchedGrandProductArgumentR1CS {
+  pub fn new(cs: ConstraintSystemRef<Fr>, p: BatchedGrandProductArgument<Fr>) -> Self {
+
+    let proof_to_circuit = p.proof
+        .iter()
+        .map(|layer_proof| {
+
+            let compressed_polys = layer_proof.proof.compressed_polys
+                .iter()
+                .map(|cp| {
+                    CompressedUniPolyVarR1CS {
+                        coeffs_except_linear_term: cp.coeffs_except_linear_term
+                            .iter()
+                            .map(|c| {
+                                FpVar::new_witness(cs.clone(), || Ok(*c))
+                                    .unwrap()
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            LayerProofBatchedR1CS {
+                proof: SumcheckInstanceProofR1CS {
+                    compressed_polys: compressed_polys  
+                },
+                claims_poly_A: layer_proof.claims_poly_A.clone(),
+                claims_poly_B: layer_proof.claims_poly_B.clone(),
+                combine_prod: layer_proof.combine_prod.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+      BatchedGrandProductArgumentR1CS {
+          proof: proof_to_circuit,
+      }
+  }
+
   pub fn verify<T: ProofTranscript<G1Projective>>(
       &self,
       cs: ConstraintSystemRef<Fr>,
@@ -1158,6 +1184,9 @@ impl BatchedGrandProductArgumentR1CS {
       let num_layers = self.proof.len();
 
       let num_layers_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
+      let num_layers_witnessa = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
+      let num_layers_witnessb = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
+      let num_layers_witnessc = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
 
       let mut claims_to_verify = claims_prod_vec.to_owned();
       for (num_rounds, i) in (0..num_layers).enumerate() {
@@ -1168,7 +1197,7 @@ impl BatchedGrandProductArgumentR1CS {
           let mut coeff_vec_witness = Vec::with_capacity(coeff_vec.len());
 
           for i in 0..coeff_vec.len() {          
-            let c_s_wit = FpVar::new_witness(cs.clone(), || Ok(coeff_vec[i])).unwrap();    
+            let c_s_wit = FpVar::new_witness(cs.clone(), || Ok(coeff_vec[i])).unwrap();       
             coeff_vec_witness.push(c_s_wit);
           }
 
@@ -1187,28 +1216,28 @@ impl BatchedGrandProductArgumentR1CS {
 
           // This is a sumcheck verify
           let (claim_last, rand_prod, claim_last_wit, rand_prod_wit) =
-              self.proof[i].verify::<G1Projective, T>(cs.clone(), claim, num_rounds, 3, transcript);
+              self.proof[i].verify::<T>(cs.clone(), claim, num_rounds, 3, transcript);
 
           let claims_prod_left = &self.proof[i].claims_poly_A;
           let claims_prod_right = &self.proof[i].claims_poly_B;
           assert_eq!(claims_prod_left.len(), claims_prod_vec.len());
           assert_eq!(claims_prod_right.len(), claims_prod_vec.len());
 
-          let mut claims_prod_left_witness = Vec::with_capacity(coeff_vec.len());
+          let mut claims_prod_left_witness = Vec::with_capacity(claims_prod_left.len());
 
           for i in 0..claims_prod_left.len() {          
             let wit = FpVar::new_witness(cs.clone(), || Ok(claims_prod_left[i])).unwrap();    
             claims_prod_left_witness.push(wit);
           }
 
-          let mut claims_prod_right_witness = Vec::with_capacity(coeff_vec.len());
+          let mut claims_prod_right_witness = Vec::with_capacity(claims_prod_right.len());
 
           for i in 0..claims_prod_right.len() {          
             let wit = FpVar::new_witness(cs.clone(), || Ok(claims_prod_right[i])).unwrap();    
             claims_prod_right_witness.push(wit);
           }
 
-          let mut claims_prod_vec_witness = Vec::with_capacity(coeff_vec.len());
+          let mut claims_prod_vec_witness = Vec::with_capacity(claims_prod_vec.len());
 
           for i in 0..claims_prod_vec.len() {          
             let wit = FpVar::new_witness(cs.clone(), || Ok(claims_prod_vec[i])).unwrap();    
@@ -1286,44 +1315,70 @@ impl BatchedGrandProductArgumentR1CS {
 }
 
 #[cfg(test)]
-mod tests {
+mod verifier_constraints_tests {
   use super::*;
   use ark_bn254::{Fr, G1Projective};
   use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError, ConstraintSystem};
   use merlin::Transcript;
+  use crate::subprotocols::grand_product::GrandProductCircuit;
+  use crate::subprotocols::grand_product::BatchedGrandProductCircuit;
   //use serde::Serialize;
 
   #[test]
+  fn grand_product_verify_constraint_count() {
+
+      let cs = ConstraintSystem::<Fr>::new();
+      let cs_ref = ConstraintSystemRef::new(cs);
+
+      let factorial =
+          DensePolynomial::new(vec![Fr::from(1), Fr::from(2), Fr::from(3), Fr::from(4)]);
+      let factorial_circuit = GrandProductCircuit::new(&factorial);
+      let expected_eval = vec![Fr::from(24)];
+      assert_eq!(factorial_circuit.evaluate(), Fr::from(24));
+
+      let mut transcript = Transcript::new(b"test_transcript");
+      let circuits_vec = vec![factorial_circuit];
+      let batch = BatchedGrandProductCircuit::new_batch(circuits_vec);
+      let (proof, _) = BatchedGrandProductArgument::prove::<G1Projective>(batch, &mut transcript);
+
+      let mut transcript = Transcript::new(b"test_transcript");
+      let r1cs_proof = BatchedGrandProductArgumentR1CS::new(cs_ref.clone(), proof);
+      r1cs_proof.verify(cs_ref.clone(), &expected_eval, &mut transcript);
+
+      println!("Number of constraints: {}", cs_ref.num_constraints());
+  }
+
+  #[test]
   fn bullet_reduction_constraint_count() -> Result<(), SynthesisError> {
-    let cs = ConstraintSystem::<Fr>::new();
-    let cs_ref = ConstraintSystemRef::new(cs);
-    
-    let l_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 5];
-    let r_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 5];
+      let cs = ConstraintSystem::<Fr>::new();
+      let cs_ref = ConstraintSystemRef::new(cs);
+      
+      let l_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 5];
+      let r_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 5];
 
-    let g_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 32];
-    
-    let proof = BulletReductionProof {
-        L_vec: l_vec,
-        R_vec: r_vec,
-    };
+      let g_vec = vec![G1Projective::rand(&mut ark_std::test_rng()); 32];
+      
+      let proof = BulletReductionProof {
+          L_vec: l_vec,
+          R_vec: r_vec,
+      };
 
-    let mut verifier_transcript = Transcript::new(b"example");
-    
-    let _ = proof.verify(
-      cs_ref.clone(),
-      &mut verifier_transcript,
-      32,
-      &[Fr::rand(&mut ark_std::test_rng()); 32],
-      &G1Projective::rand(&mut ark_std::test_rng()),
-      g_vec.as_slice(), );
-    
-    println!("Number of constraints: {}", cs_ref.num_constraints());
+      let mut verifier_transcript = Transcript::new(b"example");
+      
+      let _ = proof.verify(
+        cs_ref.clone(),
+        &mut verifier_transcript,
+        32,
+        &[Fr::rand(&mut ark_std::test_rng()); 32],
+        &G1Projective::rand(&mut ark_std::test_rng()),
+        g_vec.as_slice(), );
+      
+      println!("Number of constraints: {}", cs_ref.num_constraints());
 
-    //let serialized = serde_json::to_string(&cs).unwrap();
-    //std::fs::write("constraints.json", serialized);
-    
-    Ok(())
+      //let serialized = serde_json::to_string(&cs).unwrap();
+      //std::fs::write("constraints.json", serialized);
+      
+      Ok(())
   }
 
   #[test]
@@ -1343,7 +1398,7 @@ mod tests {
           compressed_polys: vec![compressed_poly; 5] 
       };
 
-      let _ = proof.verify_sumcheck::<G1Projective, Transcript>(
+      let _ = proof.verify_sumcheck::<Transcript>(
           cs_ref.clone(), 
           Fr::rand(&mut ark_std::test_rng()),
           5, 
