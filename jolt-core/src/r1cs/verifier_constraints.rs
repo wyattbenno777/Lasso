@@ -1181,8 +1181,9 @@ impl BatchedGrandProductArgumentR1CS {
     r: FpVar<Fr>,
     eq: FpVar<Fr>) -> FpVar<Fr> {
 
-      let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();  
       let f_one = Fr::one();
+      let one_witness = FpVar::new_witness(cs.clone(), || Ok(f_one)).unwrap(); 
+
       if l.value().unwrap() == f_one && r.value().unwrap() == f_one {
           let _ = l.enforce_equal(&one_witness).unwrap();
           let _ = r.enforce_equal(&one_witness).unwrap();
@@ -1201,24 +1202,39 @@ impl BatchedGrandProductArgumentR1CS {
   }
 
   #[inline]
-  pub fn combine_flags(h: &Fr, flag: &Fr, eq: &Fr) -> Fr {
-      if *flag == Fr::zero() {
-          *eq
-      } else if *flag == Fr::one() {
-          *eq * *h
+  pub fn combine_flags(
+      cs: ConstraintSystemRef<Fr>,
+      h: FpVar<Fr>,
+      flag: FpVar<Fr>,
+      eq: FpVar<Fr>) -> FpVar<Fr> {
+
+      let f_one = Fr::one();
+      let f_zero = Fr::zero();
+
+      let one_witness = FpVar::new_witness(cs.clone(), || Ok(f_one)).unwrap();  
+      let zero_witness = FpVar::new_witness(cs.clone(), || Ok(f_zero)).unwrap();  
+
+      let neg_flag_wit = FpVar::new_witness(cs.clone(), || Ok(Fr::from(flag.value().unwrap().neg()))).unwrap();  
+
+      if flag.value().unwrap() == f_zero {
+          let _ = flag.enforce_equal(&one_witness).unwrap();
+          eq
+      } else if flag.value().unwrap() == f_one {
+          eq * h
       } else {
-          *eq * (*flag * h + (Fr::one() + flag.neg()))
+          eq * (flag * h + (one_witness + neg_flag_wit))
       }
   }
 
   pub fn verify<T: ProofTranscript<G1Projective>>(
       &self,
       cs: ConstraintSystemRef<Fr>,
-      claims_prod_vec: &Vec<Fr>,
+      claims_prod_vec: &Vec<(Fr, FpVar<Fr>)>,
       transcript: &mut T,
-  ) -> (Vec<Fr>, Vec<Fr>)
+  ) -> (Vec<(Fr, FpVar<Fr>)>, Vec<Fr>, Vec<FpVar<Fr>>)
   {
       let mut rand: Vec<Fr> = Vec::new();
+      let mut rand_witness: Vec<FpVar<Fr>> = Vec::new();
       let num_layers = self.proof.len();
       let num_layers_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
       let claims_prod_vec_len = FpVar::new_witness(cs.clone(), || Ok(Fr::from(claims_prod_vec.len() as u64))).unwrap();    
@@ -1240,9 +1256,10 @@ impl BatchedGrandProductArgumentR1CS {
           let mut claim_wit = FpVar::new_witness(cs.clone(), || Ok(Fr::zero())).unwrap();  
           let claim = (0..claims_to_verify.len())
               .map(|i| {
-                let claims_to_verify_wit = FpVar::new_witness(cs.clone(), || Ok(claims_to_verify[i])).unwrap();  
+                let claims_to_verify_wit = FpVar::new_witness(cs.clone(), || Ok(claims_to_verify[i].0)).unwrap();  
+                
                 claim_wit += claims_to_verify_wit * coeff_vec_witness[i].clone();
-                claims_to_verify[i] * coeff_vec[i]
+                claims_to_verify[i].0 * coeff_vec[i]
               })
               .sum();
           
@@ -1250,7 +1267,7 @@ impl BatchedGrandProductArgumentR1CS {
           let _ = claim_wit.enforce_equal(&claim_res).unwrap();
 
           // This is a sumcheck verify
-          let (claim_last, rand_prod, claim_last_wit, rand_prod_wit) =
+          let (claim_last, rand_prod, claim_last_witness, rand_prod_wit) =
               self.proof[i].verify::<T>(cs.clone(), claim, num_rounds, 3, transcript);
 
           let claims_prod_left = &self.proof[i].claims_poly_A;
@@ -1275,13 +1292,6 @@ impl BatchedGrandProductArgumentR1CS {
           for i in 0..claims_prod_right.len() {          
             let wit = FpVar::new_witness(cs.clone(), || Ok(claims_prod_right[i])).unwrap();    
             claims_prod_right_witness.push(wit);
-          }
-
-          let mut claims_prod_vec_witness = Vec::with_capacity(claims_prod_vec.len());
-
-          for i in 0..claims_prod_vec.len() {          
-            let wit = FpVar::new_witness(cs.clone(), || Ok(claims_prod_vec[i])).unwrap();    
-            claims_prod_vec_witness.push(wit);
           }
 
           for i in 0..claims_prod_vec.len() {
@@ -1311,8 +1321,8 @@ impl BatchedGrandProductArgumentR1CS {
           // The evaluation is the combination of eq / A / B depending on the cubic layer type (flags / prod).
           // We also compute claims_to_verify which computes sumcheck_cubic_poly(r, r') from
           // sumcheck_cubic_poly(r, 0), sumcheck_subic_poly(r, 1)
+          let mut claim_expected_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::zero())).unwrap();  
           let claim_expected = if self.proof[i].combine_prod {
-              let mut claim_expected_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::zero())).unwrap();  
               let claim_expected : Fr = (0..claims_prod_vec.len())
                   .map(|i| {
 
@@ -1338,9 +1348,17 @@ impl BatchedGrandProductArgumentR1CS {
 
               claims_to_verify = (0..claims_prod_left.len())
                   .map(|i| {
-                      claims_prod_left[i] + r_layer * (claims_prod_right[i] - claims_prod_left[i])
+                      let r_layer_witness = FpVar::new_witness(cs.clone(), || Ok(r_layer)).unwrap();  
+                      let claims_prod_left_witness = FpVar::new_witness(cs.clone(), || Ok(claims_prod_left[i])).unwrap();  
+                      let claims_prod_right_witness = FpVar::new_witness(cs.clone(), || Ok(claims_prod_right[i])).unwrap();  
+
+                      let a = claims_prod_left[i] + r_layer * (claims_prod_right[i] - claims_prod_left[i]);
+                      let b = claims_prod_left_witness.clone() + r_layer_witness *
+                      (claims_prod_right_witness - claims_prod_left_witness.clone());
+
+                      (a, b)
                   })
-                  .collect::<Vec<Fr>>();
+                  .collect::<Vec<(Fr, FpVar<Fr>)>>();
 
               let mut ext = vec![r_layer];
               ext.extend(rand_prod);
@@ -1351,13 +1369,22 @@ impl BatchedGrandProductArgumentR1CS {
               let claim_expected: Fr = (0..claims_prod_vec.len())
                   .map(|i| {
 
+                    let coeff_vec_i_witness = FpVar::new_witness(cs.clone(), || Ok(coeff_vec[i])).unwrap();  
+                    let claims_prod_left_witness = FpVar::new_witness(cs.clone(), || Ok(claims_prod_left[i])).unwrap();  
+                    let claims_prod_right_witness = FpVar::new_witness(cs.clone(), || Ok(claims_prod_right[i])).unwrap(); 
+
                       //Function from CubicSumcheckParams.
-                      coeff_vec[i]
-                          * Self::combine_flags(
-                              &claims_prod_left[i],
-                              &claims_prod_right[i],
-                              &eq,
-                          )
+                      let combined_p =  Self::combine_flags(
+                        cs.clone(),
+                        claims_prod_left_witness,
+                        claims_prod_right_witness,
+                        eq_witness.clone(),
+                      );
+                  
+                    let end = coeff_vec_i_witness * combined_p;
+
+                    claim_expected_witness += end.clone();
+                    end.value().unwrap()
                   })
                   .sum();
 
@@ -1365,17 +1392,32 @@ impl BatchedGrandProductArgumentR1CS {
 
               claims_to_verify = (0..claims_prod_left.len())
                   .map(|i| {
-                      claims_prod_left[i] * claims_prod_right[i]
-                          + (Fr::one() - claims_prod_right[i])
+
+                    let claims_prod_left_witness = FpVar::new_witness(cs.clone(), || Ok(claims_prod_left[i])).unwrap();  
+                    let claims_prod_right_witness = FpVar::new_witness(cs.clone(), || Ok(claims_prod_right[i])).unwrap(); 
+
+                    let a = claims_prod_left[i] * claims_prod_right[i]
+                          + (Fr::one() - claims_prod_right[i]);
+                    let b = claims_prod_left_witness.clone() * claims_prod_right_witness.clone()
+                          + (one_witness.clone() - claims_prod_right_witness.clone());
+
+                    (a, b)
                   })
-                  .collect::<Vec<Fr>>();
+                  .collect::<Vec<(Fr, FpVar<Fr>)>>();
 
               claim_expected
           };
 
           assert_eq!(claim_expected, claim_last);
+          assert_eq!(claim_last_witness.value().unwrap(), claim_expected_witness.value().unwrap());
+          let _ = claim_last_witness.enforce_equal(&claim_expected_witness).unwrap();
       }
-      (claims_to_verify, rand)
+
+      for i in 0..rand.len() {          
+        let wit = FpVar::new_witness(cs.clone(), || Ok(rand[i])).unwrap();    
+        rand_witness.push(wit);
+      }
+      (claims_to_verify, rand, rand_witness)
   }
 }
 
@@ -1400,7 +1442,7 @@ mod verifier_constraints_tests {
       let factorial =
           DensePolynomial::new(vec![Fr::from(1), Fr::from(2), Fr::from(3), Fr::from(4)]);
       let factorial_circuit = GrandProductCircuit::new(&factorial);
-      let expected_eval = vec![Fr::from(24)];
+      let expected_eval = vec![(Fr::from(24), FpVar::new_input(cs_ref.clone(), || Ok(Fr::from(24))).unwrap())];
       assert_eq!(factorial_circuit.evaluate(), Fr::from(24));
 
       let mut transcript = Transcript::new(b"test_transcript");
