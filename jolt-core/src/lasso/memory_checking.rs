@@ -375,6 +375,86 @@ where
         Ok(())
     }
 
+  fn verify_memory_checking_r1cs(
+    mut proof: MemoryCheckingProof<
+        G,
+        Polynomials,
+        Self::ReadWriteOpenings,
+        Self::InitFinalOpenings,
+    >,
+    commitments: &Polynomials::Commitment,
+    transcript: &mut Transcript,
+  ) -> Result<(), ProofVerifyError> {
+      // Fiat-Shamir randomness for multiset hashes
+      let gamma: F = <Transcript as ProofTranscript<G>>::challenge_scalar(
+          transcript,
+          b"Memory checking gamma",
+      );
+      let tau: F = <Transcript as ProofTranscript<G>>::challenge_scalar(
+          transcript,
+          b"Memory checking tau",
+      );
+
+      <Transcript as ProofTranscript<G>>::append_protocol_name(transcript, Self::protocol_name());
+
+      for hash in &proof.multiset_hashes {
+          // Multiset equality check
+          assert_eq!(
+              hash.hash_init * hash.hash_write,
+              hash.hash_read * hash.hash_final
+          );
+          hash.append_to_transcript::<G>(transcript);
+      }
+
+      let interleaved_read_write_hashes = proof
+          .multiset_hashes
+          .iter()
+          .flat_map(|hash| [hash.hash_read, hash.hash_write])
+          .collect();
+      let interleaved_init_final_hashes = proof
+          .multiset_hashes
+          .iter()
+          .flat_map(|hash| [hash.hash_init, hash.hash_final])
+          .collect();
+
+      let (claims_read_write, r_read_write) = proof
+          .read_write_grand_product
+          .verify::<G, Transcript>(&interleaved_read_write_hashes, transcript);
+      let (claims_init_final, r_init_final) = proof
+          .init_final_grand_product
+          .verify::<G, Transcript>(&interleaved_init_final_hashes, transcript);
+
+      proof
+          .read_write_openings
+          .verify_openings(commitments, &r_read_write, transcript)?;
+      proof
+          .init_final_openings
+          .verify_openings(commitments, &r_init_final, transcript)?;
+
+      Self::compute_verifier_openings(&mut proof.init_final_openings, &r_init_final);
+
+      assert_eq!(claims_read_write.len(), claims_init_final.len());
+      assert!(claims_read_write.len() % 2 == 0);
+      let num_memories = claims_read_write.len() / 2;
+      let grand_product_claims: Vec<MultisetHashes<F>> = (0..num_memories)
+          .map(|i| MultisetHashes {
+              hash_read: claims_read_write[2 * i],
+              hash_write: claims_read_write[2 * i + 1],
+              hash_init: claims_init_final[2 * i],
+              hash_final: claims_init_final[2 * i + 1],
+          })
+          .collect();
+      Self::check_fingerprints(
+          grand_product_claims,
+          &proof.read_write_openings,
+          &proof.init_final_openings,
+          &gamma,
+          &tau,
+      );
+
+      Ok(())
+  }
+
     /// Often some of the fields in `InitFinalOpenings` do not require an opening proof provided by
     /// the prover, and instead can be efficiently computed by the verifier by itself. This function
     /// populates any such fields in `openings`.

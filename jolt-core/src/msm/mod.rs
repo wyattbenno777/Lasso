@@ -5,7 +5,7 @@ use ark_std::{borrow::Borrow, iterable::Iterable, vec::Vec};
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 use ark_r1cs_std::{
   alloc::AllocVar,
-  fields::fp::{FpVar, AllocatedFp},
+  fields::fp::FpVar,
   fields::nonnative::NonNativeFieldVar,
   prelude::{EqGadget, FieldVar},
   bits::boolean::Boolean,
@@ -333,7 +333,7 @@ fn divn_circuit(
   
     let mut n_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(n))).unwrap();
     let sixty_four = FpVar::new_constant(cs.clone(), Fr::from(64u8)).unwrap();
-    let zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
+    let _zero_witness = FpVar::new_constant(cs.clone(), Fr::zero()).unwrap();
     
     let compare_constr = &sixty_four * &num_limbs_witness;
     // Constrain: 0 <= compare_constr < n
@@ -369,7 +369,7 @@ fn divn_circuit(
       // Constrain: 0 <= 0 < n
       //let _ = zero_witness.enforce_cmp(&n_witness, core::cmp::Ordering::Less, false);
       let mut t = 0;
-      let mut t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
+      let _t_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(t as u64))).unwrap();
   
       #[allow(unused)]
       for i in 0..num_limbs {
@@ -476,7 +476,7 @@ fn msm_bigint_circuit(
   
     let sixty = FpVar::new_constant(cs.clone(), Fr::from(60u8)).unwrap();
   
-    for (i, bigint) in bigints.iter().enumerate()  {
+    for (_i, bigint) in bigints.iter().enumerate()  {
   
       let _ = FpVar::new_witness(cs.clone(), || Ok(Fr::from(max_num_bits as u64))).unwrap();
   

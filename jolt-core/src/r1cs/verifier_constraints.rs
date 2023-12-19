@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 
 use crate::{
   poly::unipoly::{UniPoly},
-  utils::transcript::{AppendToTranscript, ProofTranscript},
+  utils::transcript::ProofTranscript,
   poly::dense_mlpoly::{DensePolynomial}
 };
 use ark_ff::{prelude::*, PrimeField};
@@ -19,7 +19,6 @@ use ark_r1cs_std::{
 };
 use ark_relations::r1cs::{ConstraintSystemRef, Namespace, SynthesisError};
 use ark_serialize::*;
-use ark_ec::CurveGroup;
 use ark_r1cs_std::R1CSVar;
 use ark_std::One;
 use ark_ec::AffineRepr;
@@ -40,12 +39,12 @@ use super::gadgets;
 use ark_r1cs_std::groups::CurveVar;
 use crate::utils::math::Math;
 
-use crate::poly::structured_poly::{BatchablePolynomials, StructuredOpeningProof};
-use ark_ec::Group;
+use crate::poly::structured_poly::StructuredOpeningProof;
 use crate::subprotocols::grand_product::BatchedGrandProductArgument;
-use crate::subprotocols::sumcheck::CubicSumcheckParams;
 
 use std::ops::Neg;
+use ark_ec::Group;
+
 
 /* There are three main phases of Lasso verification
  Lasso's goal is to prove an opening of the Sparse Matrix Polynomial.
@@ -178,13 +177,6 @@ impl CompressedUniPolyVarR1CS {
   }
 }
 
-pub struct SurgePrimarySumcheck {
-  sumcheck_proof: SumcheckInstanceProofR1CS,
-  num_rounds: usize,
-  claimed_evaluation: Fr,
-  openings: PrimarySumcheckOpeningsR1CS,
-}
-
 #[derive(Debug)]
 struct PrimarySumcheckOpeningsR1CS
 {
@@ -192,7 +184,7 @@ struct PrimarySumcheckOpeningsR1CS
     E_poly_opening_proof: CombinedTableEvalProof,
 }
 
-
+#[allow(unused)]
 impl PrimarySumcheckOpeningsR1CS {
     fn verify_openings<T: ProofTranscript<G1Projective>>(
         &self,
@@ -225,6 +217,7 @@ pub struct SurgeCommitmentGenerators {
   pub E_commitment_gens: PolyCommitmentGens,
 }
 
+#[allow(unused)]
 pub struct SurgePolys {
   _group: PhantomData<G1Projective>,
   pub dim: Vec<DensePolynomial<Fr>>,
@@ -238,6 +231,7 @@ pub struct CombinedTableEvalProof {
     joint_proof: PolyEvalProof,
 }
 
+#[allow(unused)]
 impl CombinedTableEvalProof {
 
   pub fn bound_poly_var_bot(
@@ -340,6 +334,7 @@ pub struct CombinedTableCommitment {
     joint_commitment: PolyCommitment,
 }
 
+#[allow(unused)]
 impl CombinedTableCommitment {
     pub fn new(joint_commitment: PolyCommitment) -> Self {
         Self { joint_commitment }
@@ -350,6 +345,7 @@ pub struct PolyCommitmentGens {
   pub gens: DotProductProofGens,
 }
 
+#[allow(unused)]
 impl PolyCommitmentGens {
   // the number of variables in the multilinear polynomial
   pub fn new(num_vars: usize, label: &'static [u8]) -> Self {
@@ -369,6 +365,7 @@ pub struct PolyEvalProof {
     proof: DotProductProof,
 }
 
+#[allow(unused)]
 impl PolyEvalProof {
 
   pub fn compute_factored_lens(ell: usize) -> (usize, usize) {
@@ -498,6 +495,7 @@ pub struct DotProductProof {
     z_beta: Fr,
 }
 
+#[allow(unused)]
 impl DotProductProof {
 
   pub fn compute_dotproduct(
@@ -900,12 +898,14 @@ impl BulletReductionProof {
 
 }
 
+#[allow(unused)]
 pub struct DotProductProofGens {
   n: usize,
   pub gens_n: MultiCommitGens<G1Projective>,
   pub gens_1: MultiCommitGens<G1Projective>,
 }
 
+#[allow(unused)]
 impl DotProductProofGens {
   pub fn new(n: usize, label: &[u8]) -> Self {
     let (gens_n, gens_1) = MultiCommitGens::new(n + 1, label).split_at(n);
@@ -913,6 +913,7 @@ impl DotProductProofGens {
   }
 }
 
+#[allow(unused)]
 #[derive(Debug)]
 pub struct DotProductProofLog {
   bullet_reduction_proof: BulletReductionProof,
@@ -922,6 +923,7 @@ pub struct DotProductProofLog {
   z2: Fr,
 }
 
+#[allow(unused)]
 impl DotProductProofLog {
   pub fn verify<T: ProofTranscript<G1Projective>>(
     &self,
@@ -1083,30 +1085,6 @@ fn ln_without_floats(a: usize) -> usize {
   (ark_std::log2(a) * 69 / 100) as usize
 }
 
-// Memory Checking in R1CS.
-
-pub struct MultisetHashes {
-  /// Multiset hash of "init" tuple(s)
-  hash_init: Fr,
-  /// Multiset hash of "final" tuple(s)
-  hash_final: Fr,
-  /// Multiset hash of "read" tuple(s)
-  hash_read: Fr,
-  /// Multiset hash of "write" tuple(s)
-  hash_write: Fr,
-}
-
-impl MultisetHashes {
-
-  fn append_to_transcript<T: ProofTranscript<G1Projective>>(&self, label: &'static [u8], transcript: &mut T) {
-    transcript.append_scalar(b"claim_hash_init", &self.hash_init);
-    transcript.append_scalar(b"claim_hash_read", &self.hash_read);
-    transcript.append_scalar(b"claim_hash_write", &self.hash_write);
-    transcript.append_scalar(b"claim_hash_final", &self.hash_final);
-  }
-
-}
-
 #[derive(Debug)]
 pub struct LayerProofBatchedR1CS {
     pub proof: SumcheckInstanceProofR1CS,
@@ -1136,6 +1114,7 @@ pub struct BatchedGrandProductArgumentR1CS {
     proof: Vec<LayerProofBatchedR1CS>,
 }
 
+#[allow(dead_code)]
 impl BatchedGrandProductArgumentR1CS {
   pub fn new(cs: ConstraintSystemRef<Fr>, p: BatchedGrandProductArgument<Fr>) -> Self {
 
@@ -1217,11 +1196,14 @@ impl BatchedGrandProductArgumentR1CS {
       let neg_flag_wit = FpVar::new_witness(cs.clone(), || Ok(Fr::from(flag.value().unwrap().neg()))).unwrap();  
 
       if flag.value().unwrap() == f_zero {
-          let _ = flag.enforce_equal(&one_witness).unwrap();
+          let _ = flag.enforce_equal(&zero_witness).unwrap();
           eq
       } else if flag.value().unwrap() == f_one {
+          let _ = flag.enforce_equal(&one_witness).unwrap();
           eq * h
       } else {
+          let _ = flag.enforce_not_equal(&zero_witness).unwrap();
+          let _ = flag.enforce_not_equal(&one_witness).unwrap();
           eq * (flag * h + (one_witness + neg_flag_wit))
       }
   }
@@ -1236,7 +1218,7 @@ impl BatchedGrandProductArgumentR1CS {
       let mut rand: Vec<Fr> = Vec::new();
       let mut rand_witness: Vec<FpVar<Fr>> = Vec::new();
       let num_layers = self.proof.len();
-      let num_layers_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
+      let _num_layers_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::from(num_layers as u64))).unwrap();   
       let claims_prod_vec_len = FpVar::new_witness(cs.clone(), || Ok(Fr::from(claims_prod_vec.len() as u64))).unwrap();    
 
       let mut claims_to_verify = claims_prod_vec.to_owned();
@@ -1263,11 +1245,11 @@ impl BatchedGrandProductArgumentR1CS {
               })
               .sum();
           
-          let mut claim_res = FpVar::new_witness(cs.clone(), || Ok(claim)).unwrap();  
+          let claim_res = FpVar::new_witness(cs.clone(), || Ok(claim)).unwrap();  
           let _ = claim_wit.enforce_equal(&claim_res).unwrap();
 
           // This is a sumcheck verify
-          let (claim_last, rand_prod, claim_last_witness, rand_prod_wit) =
+          let (claim_last, rand_prod, claim_last_witness, _rand_prod_wit) =
               self.proof[i].verify::<T>(cs.clone(), claim, num_rounds, 3, transcript);
 
           let claims_prod_left = &self.proof[i].claims_poly_A;
@@ -1303,7 +1285,7 @@ impl BatchedGrandProductArgumentR1CS {
           let one_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();  
           let mut eq_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::one())).unwrap();  
           assert_eq!(rand.len(), rand_prod.len());
-          let eq: Fr = (0..rand.len())
+          let _eq: Fr = (0..rand.len())
               .map(|i| {
                 let rand_i_witness = FpVar::new_witness(cs.clone(), || Ok(rand[i])).unwrap();  
                 let rand_prod_i_witness = FpVar::new_witness(cs.clone(), || Ok(rand_prod[i])).unwrap();  
@@ -1323,7 +1305,7 @@ impl BatchedGrandProductArgumentR1CS {
           // sumcheck_cubic_poly(r, 0), sumcheck_subic_poly(r, 1)
           let mut claim_expected_witness = FpVar::new_witness(cs.clone(), || Ok(Fr::zero())).unwrap();  
           let claim_expected = if self.proof[i].combine_prod {
-              let claim_expected : Fr = (0..claims_prod_vec.len())
+              let _claim_expected : Fr = (0..claims_prod_vec.len())
                   .map(|i| {
 
                       let coeff_vec_i_witness = FpVar::new_witness(cs.clone(), || Ok(coeff_vec[i])).unwrap();  
@@ -1366,7 +1348,7 @@ impl BatchedGrandProductArgumentR1CS {
 
               claim_expected_witness.clone().value().unwrap()
           } else {
-              let claim_expected: Fr = (0..claims_prod_vec.len())
+              let _claim_expected: Fr = (0..claims_prod_vec.len())
                   .map(|i| {
 
                     let coeff_vec_i_witness = FpVar::new_witness(cs.clone(), || Ok(coeff_vec[i])).unwrap();  
@@ -1405,7 +1387,7 @@ impl BatchedGrandProductArgumentR1CS {
                   })
                   .collect::<Vec<(Fr, FpVar<Fr>)>>();
 
-              claim_expected
+              claim_expected_witness.clone().value().unwrap()
           };
 
           assert_eq!(claim_expected, claim_last);
@@ -1559,7 +1541,7 @@ mod verifier_constraints_tests {
 
       // Verify proof 
       let mut transcript = Transcript::new(b"test");
-      let result = proof.verify(
+      let _result = proof.verify(
           cs_ref.clone(),
           &gens, 
           &mut transcript,
@@ -1609,7 +1591,7 @@ mod verifier_constraints_tests {
       let mut transcript = Transcript::new(b"test");
 
       // Verify proof
-      let result = CombinedTableEvalProof {
+      let _result = CombinedTableEvalProof {
           joint_proof: proof
       }
       .verify(
